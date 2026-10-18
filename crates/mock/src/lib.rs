@@ -41,10 +41,26 @@ pub struct Recording {
 }
 
 fn describe(e: &Entry) -> String {
-    let query: Vec<String> = e.query.iter().map(|(k, v)| format!("{k}={}", v.join(","))).collect();
-    let q = if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) };
-    let body = if e.body.is_null() { String::new() } else { format!(" body={}", e.body) };
-    let headers = if e.headers.is_empty() { String::new() } else { format!(" headers={:?}", e.headers) };
+    let query: Vec<String> = e
+        .query
+        .iter()
+        .map(|(k, v)| format!("{k}={}", v.join(",")))
+        .collect();
+    let q = if query.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", query.join("&"))
+    };
+    let body = if e.body.is_null() {
+        String::new()
+    } else {
+        format!(" body={}", e.body)
+    };
+    let headers = if e.headers.is_empty() {
+        String::new()
+    } else {
+        format!(" headers={:?}", e.headers)
+    };
     format!("{} {}{q}{body}{headers}", e.method, e.path)
 }
 
@@ -60,17 +76,30 @@ pub fn compare(expected: &Recording, actual: &Recording) -> Vec<String> {
         .chain(actual.outcomes.keys().cloned())
         .collect();
     let of = |rec: &Recording, id: &str| -> Vec<Entry> {
-        rec.requests.iter().filter(|r| r.scenario.as_deref().unwrap_or("(none)") == id).cloned().collect()
+        rec.requests
+            .iter()
+            .filter(|r| r.scenario.as_deref().unwrap_or("(none)") == id)
+            .cloned()
+            .collect()
     };
 
     let mut problems = Vec::new();
     for id in ids {
         let (e, a) = (of(expected, &id), of(actual, &id));
         if e.len() != a.len() {
-            problems.push(format!("[{id}] the original sent {} request(s), the port sent {}", e.len(), a.len()));
+            problems.push(format!(
+                "[{id}] the original sent {} request(s), the port sent {}",
+                e.len(),
+                a.len()
+            ));
         }
         if let Some((i, (x, y))) = e.iter().zip(&a).enumerate().find(|(_, (x, y))| x != y) {
-            problems.push(format!("[{id}] request #{}:\n    original: {}\n    port:     {}", i + 1, describe(x), describe(y)));
+            problems.push(format!(
+                "[{id}] request #{}:\n    original: {}\n    port:     {}",
+                i + 1,
+                describe(x),
+                describe(y)
+            ));
         }
         let (eo, ao) = (expected.outcomes.get(&id), actual.outcomes.get(&id));
         if eo != ao {
@@ -90,10 +119,16 @@ pub struct Comparison {
 }
 
 /// Like [`compare`], but differences in the scenarios listed in `accepted_ids` don't block.
-pub fn compare_accepting(expected: &Recording, actual: &Recording, accepted_ids: &[String]) -> Comparison {
+pub fn compare_accepting(
+    expected: &Recording,
+    actual: &Recording,
+    accepted_ids: &[String],
+) -> Comparison {
     let mut out = Comparison::default();
     for problem in compare(expected, actual) {
-        let accepted = accepted_ids.iter().any(|id| problem.starts_with(&format!("[{id}]")));
+        let accepted = accepted_ids
+            .iter()
+            .any(|id| problem.starts_with(&format!("[{id}]")));
         if accepted {
             out.accepted.push(problem);
         } else {
@@ -108,11 +143,21 @@ mod tests {
     use super::*;
 
     fn entry(scenario: &str, method: &str, path: &str, body: Value) -> Entry {
-        Entry { scenario: Some(scenario.into()), method: method.into(), path: path.into(), query: BTreeMap::new(), body, headers: BTreeMap::new() }
+        Entry {
+            scenario: Some(scenario.into()),
+            method: method.into(),
+            path: path.into(),
+            query: BTreeMap::new(),
+            body,
+            headers: BTreeMap::new(),
+        }
     }
 
     fn rec(requests: Vec<Entry>, outcome: &str) -> Recording {
-        Recording { requests, outcomes: BTreeMap::from([("s1".to_string(), outcome.to_string())]) }
+        Recording {
+            requests,
+            outcomes: BTreeMap::from([("s1".to_string(), outcome.to_string())]),
+        }
     }
 
     #[test]
@@ -123,10 +168,18 @@ mod tests {
 
     #[test]
     fn reports_differences() {
-        let a = rec(vec![entry("s1", "GET", "/pets", Value::Null), entry("s1", "GET", "/pets", Value::Null)], "ok");
+        let a = rec(
+            vec![
+                entry("s1", "GET", "/pets", Value::Null),
+                entry("s1", "GET", "/pets", Value::Null),
+            ],
+            "ok",
+        );
         let b = rec(vec![entry("s1", "GET", "/pets/", Value::Null)], "error");
         let p = compare(&a, &b);
-        assert!(p.iter().any(|m| m.contains("sent 2 request(s), the port sent 1")));
+        assert!(p
+            .iter()
+            .any(|m| m.contains("sent 2 request(s), the port sent 1")));
         assert!(p.iter().any(|m| m.contains("request #1")));
         assert!(p.iter().any(|m| m.contains("outcome")));
     }

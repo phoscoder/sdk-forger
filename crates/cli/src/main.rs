@@ -4,13 +4,20 @@ mod port;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use sdkforge_generate::{check_fidelity, chunk_prompt, core_prompt, fix_prompt, request_files, request_files_with, Claude, GeneratedFile};
+use sdkforge_generate::{
+    check_fidelity, chunk_prompt, core_prompt, fix_prompt, request_files, request_files_with,
+    Claude, GeneratedFile,
+};
 use sdkforge_ingest::Lang;
 use sdkforge_ir::Api;
 use sdkforge_verify::{fix_loop, for_target, run_in_sandbox, Outcome, RetryPolicy, VerifyError};
 
 #[derive(Parser)]
-#[command(name = "sdkforge", version, about = "AI-built, sandbox-verified API SDKs")]
+#[command(
+    name = "sdkforge",
+    version,
+    about = "AI-built, sandbox-verified API SDKs"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -118,17 +125,37 @@ pub(crate) fn merge(all: &mut Vec<GeneratedFile>, new: Vec<GeneratedFile>) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn generate(spec: String, instructions: String, langs: Vec<String>, out: PathBuf, dry_run: bool, model: Option<String>, max_attempts: u32, token_budget: u64) {
+fn generate(
+    spec: String,
+    instructions: String,
+    langs: Vec<String>,
+    out: PathBuf,
+    dry_run: bool,
+    model: Option<String>,
+    max_attempts: u32,
+    token_budget: u64,
+) {
     let mut targets: Vec<Lang> = Vec::new();
     for name in &langs {
-        let l = Lang::parse(name).unwrap_or_else(|| die(&format!("unknown language `{name}`; use python, node, php, rust or go")));
+        let l = Lang::parse(name).unwrap_or_else(|| {
+            die(&format!(
+                "unknown language `{name}`; use python, node, php, rust or go"
+            ))
+        });
         if !targets.contains(&l) {
             targets.push(l);
         }
     }
-    let api = sdkforge_ingest::ingest_path(Path::new(&spec)).unwrap_or_else(|e| die(&e.to_string()));
+    let api =
+        sdkforge_ingest::ingest_path(Path::new(&spec)).unwrap_or_else(|e| die(&e.to_string()));
 
-    println!("{} v{} ({} resources, {} types)", api.name, api.version, api.resources.len(), api.types.len());
+    println!(
+        "{} v{} ({} resources, {} types)",
+        api.name,
+        api.version,
+        api.resources.len(),
+        api.types.len()
+    );
     for r in &api.resources {
         println!("  {}", r.name);
         for o in &r.operations {
@@ -150,12 +177,40 @@ fn generate(spec: String, instructions: String, langs: Vec<String>, out: PathBuf
             .iter()
             .map(|&lang| {
                 let (api, instructions, model) = (&api, &instructions, model.clone());
-                let dir = if many { out.join(lang.name()) } else { out.clone() };
-                let tag = if many { format!("[{}] ", lang.name()) } else { String::new() };
-                scope.spawn(move || (lang, generate_one(api, lang, instructions, &dir, model, max_attempts, token_budget, &tag)))
+                let dir = if many {
+                    out.join(lang.name())
+                } else {
+                    out.clone()
+                };
+                let tag = if many {
+                    format!("[{}] ", lang.name())
+                } else {
+                    String::new()
+                };
+                scope.spawn(move || {
+                    (
+                        lang,
+                        generate_one(
+                            api,
+                            lang,
+                            instructions,
+                            &dir,
+                            model,
+                            max_attempts,
+                            token_budget,
+                            &tag,
+                        ),
+                    )
+                })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| die("a generator thread panicked"))).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| die("a generator thread panicked"))
+            })
+            .collect()
     });
 
     let mut failed = false;
@@ -175,7 +230,16 @@ fn generate(spec: String, instructions: String, langs: Vec<String>, out: PathBuf
 
 /// One language, start to finish. Errors are returned (not fatal) so other languages can finish.
 #[allow(clippy::too_many_arguments)]
-fn generate_one(api: &Api, lang: Lang, instructions: &str, out: &Path, model: Option<String>, max_attempts: u32, token_budget: u64, tag: &str) -> Result<String, String> {
+fn generate_one(
+    api: &Api,
+    lang: Lang,
+    instructions: &str,
+    out: &Path,
+    model: Option<String>,
+    max_attempts: u32,
+    token_budget: u64,
+    tag: &str,
+) -> Result<String, String> {
     let log = |m: &str| println!("{tag}{m}");
     let plan = sdkforge_planner::plan(api, lang.name());
     let tc = for_target(lang.name()).ok_or("no sandbox recipe for that language")?;
@@ -183,17 +247,28 @@ fn generate_one(api: &Api, lang: Lang, instructions: &str, out: &Path, model: Op
     let mut files: Vec<GeneratedFile> = Vec::new();
 
     log("generating core...");
-    merge(&mut files, request_files(&mut claude, &core_prompt(api, &plan, instructions)).map_err(|e| e.to_string())?);
+    merge(
+        &mut files,
+        request_files(&mut claude, &core_prompt(api, &plan, instructions))
+            .map_err(|e| e.to_string())?,
+    );
     for r in &api.resources {
         log(&format!("generating {}...", r.name));
-        merge(&mut files, request_files(&mut claude, &chunk_prompt(api, &plan, r, instructions)).map_err(|e| e.to_string())?);
+        merge(
+            &mut files,
+            request_files(&mut claude, &chunk_prompt(api, &plan, r, instructions))
+                .map_err(|e| e.to_string())?,
+        );
     }
     if files.is_empty() {
         return Err("the model returned no files".into());
     }
     write_files(out, &files);
 
-    let policy = RetryPolicy { max_attempts, token_budget };
+    let policy = RetryPolicy {
+        max_attempts,
+        token_budget,
+    };
     let claude = std::cell::RefCell::new(claude);
     let files = std::cell::RefCell::new(files);
     let result = fix_loop(
@@ -202,15 +277,25 @@ fn generate_one(api: &Api, lang: Lang, instructions: &str, out: &Path, model: Op
             let problems = check_fidelity(api, lang.name(), &files.borrow());
             if !problems.is_empty() {
                 log("spec fidelity check failed");
-                let output = format!("Spec fidelity check failed. Remove or fix paths not in the API model:\n{}", problems.join("\n"));
-                return Ok(Outcome { success: false, output });
+                let output = format!(
+                    "Spec fidelity check failed. Remove or fix paths not in the API model:\n{}",
+                    problems.join("\n")
+                );
+                return Ok(Outcome {
+                    success: false,
+                    output,
+                });
             }
             log("verifying in sandbox...");
             run_in_sandbox(out, &tc)
         },
         |err| {
             log("verification failed, asking the model for a fix...");
-            let fixed = request_files_with(&mut claude.borrow_mut(), &fix_prompt(&plan, &files.borrow(), err)).map_err(|e| VerifyError::Sandbox(e.to_string()))?;
+            let fixed = request_files_with(
+                &mut claude.borrow_mut(),
+                &fix_prompt(&plan, &files.borrow(), err),
+            )
+            .map_err(|e| VerifyError::Sandbox(e.to_string()))?;
             write_files(out, &fixed);
             merge(&mut files.borrow_mut(), fixed);
             Ok(())
@@ -219,22 +304,81 @@ fn generate_one(api: &Api, lang: Lang, instructions: &str, out: &Path, model: Op
     );
     let tokens = claude.borrow().tokens_used;
     match result {
-        Ok((o, attempts)) if o.success => Ok(format!("verified after {attempts} attempt(s), {tokens} tokens: {}", out.display())),
-        Ok((o, attempts)) => Err(format!("not verified after {attempts} attempt(s); flagged for review, output left in {}\n{}", out.display(), o.output)),
+        Ok((o, attempts)) if o.success => Ok(format!(
+            "verified after {attempts} attempt(s), {tokens} tokens: {}",
+            out.display()
+        )),
+        Ok((o, attempts)) => Err(format!(
+            "not verified after {attempts} attempt(s); flagged for review, output left in {}\n{}",
+            out.display(),
+            o.output
+        )),
         Err(e) => Err(e.to_string()),
     }
 }
 
 fn main() {
     match Cli::parse().command {
-        Command::Generate { spec, instructions, lang, out, dry_run, model, max_attempts, token_budget } => {
-            generate(spec, instructions, lang, out, dry_run, model, max_attempts, token_budget)
-        }
-        Command::Maintain { repo, request, bug, workdir, push, model, max_attempts, token_budget } => {
-            maintain::run(maintain::Args { repo, request, bug, workdir, push, model, max_attempts, token_budget })
-        }
-        Command::Port { repo, to, from, instructions, out, model, max_attempts, token_budget, no_parity, accept_diff } => {
-            port::run(port::Args { repo, to, from, instructions, out, model, max_attempts, token_budget, parity: !no_parity, accept: accept_diff })
-        }
+        Command::Generate {
+            spec,
+            instructions,
+            lang,
+            out,
+            dry_run,
+            model,
+            max_attempts,
+            token_budget,
+        } => generate(
+            spec,
+            instructions,
+            lang,
+            out,
+            dry_run,
+            model,
+            max_attempts,
+            token_budget,
+        ),
+        Command::Maintain {
+            repo,
+            request,
+            bug,
+            workdir,
+            push,
+            model,
+            max_attempts,
+            token_budget,
+        } => maintain::run(maintain::Args {
+            repo,
+            request,
+            bug,
+            workdir,
+            push,
+            model,
+            max_attempts,
+            token_budget,
+        }),
+        Command::Port {
+            repo,
+            to,
+            from,
+            instructions,
+            out,
+            model,
+            max_attempts,
+            token_budget,
+            no_parity,
+            accept_diff,
+        } => port::run(port::Args {
+            repo,
+            to,
+            from,
+            instructions,
+            out,
+            model,
+            max_attempts,
+            token_budget,
+            parity: !no_parity,
+            accept: accept_diff,
+        }),
     }
 }

@@ -1,7 +1,7 @@
-use serde_json::Value;
 use sdkforge_ir::{
     Api, Field, Operation, Param, ParamLocation, Resource, Response, TypeDef, TypeRef,
 };
+use serde_json::Value;
 
 use crate::{Ingest, IngestError};
 
@@ -12,9 +12,16 @@ pub struct OpenApi;
 
 impl Ingest for OpenApi {
     fn ingest(&self, input: &str) -> Result<Api, IngestError> {
-        let doc: Value = serde_yaml::from_str(input).map_err(|e| IngestError::Invalid(e.to_string()))?;
-        if !doc.get("openapi").and_then(Value::as_str).is_some_and(|v| v.starts_with('3')) {
-            return Err(IngestError::Invalid("expected an OpenAPI 3.x document".into()));
+        let doc: Value =
+            serde_yaml::from_str(input).map_err(|e| IngestError::Invalid(e.to_string()))?;
+        if !doc
+            .get("openapi")
+            .and_then(Value::as_str)
+            .is_some_and(|v| v.starts_with('3'))
+        {
+            return Err(IngestError::Invalid(
+                "expected an OpenAPI 3.x document".into(),
+            ));
         }
         let info = &doc["info"];
         let mut api = Api {
@@ -30,7 +37,9 @@ impl Ingest for OpenApi {
             }
         }
 
-        let Some(paths) = doc["paths"].as_object() else { return Ok(api) };
+        let Some(paths) = doc["paths"].as_object() else {
+            return Ok(api);
+        };
         for (path, item) in paths {
             let item = resolve(&doc, item);
             for method in METHODS {
@@ -40,7 +49,10 @@ impl Ingest for OpenApi {
                 let group = resource_name(path, op);
                 match api.resources.iter_mut().find(|r| r.name == group) {
                     Some(r) => r.operations.push(operation),
-                    None => api.resources.push(Resource { name: group, operations: vec![operation] }),
+                    None => api.resources.push(Resource {
+                        name: group,
+                        operations: vec![operation],
+                    }),
                 }
             }
         }
@@ -51,7 +63,9 @@ impl Ingest for OpenApi {
 /// Follow a local `#/...` `$ref` (depth-limited against cycles).
 fn resolve<'a>(doc: &'a Value, mut v: &'a Value) -> &'a Value {
     for _ in 0..16 {
-        let Some(r) = v.get("$ref").and_then(Value::as_str) else { break };
+        let Some(r) = v.get("$ref").and_then(Value::as_str) else {
+            break;
+        };
         match r.strip_prefix('#').and_then(|p| doc.pointer(p)) {
             Some(t) => v = t,
             None => break,
@@ -61,9 +75,14 @@ fn resolve<'a>(doc: &'a Value, mut v: &'a Value) -> &'a Value {
 }
 
 fn ref_name(v: &Value) -> Option<String> {
-    v.get("$ref")?.as_str()?.rsplit('/').next().map(str::to_string)
+    v.get("$ref")?
+        .as_str()?
+        .rsplit('/')
+        .next()
+        .map(str::to_string)
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn type_ref(doc: &Value, schema: &Value) -> TypeRef {
     if let Some(name) = ref_name(schema) {
         return TypeRef::Named(name);
@@ -97,7 +116,10 @@ fn type_def(doc: &Value, name: &str, schema: &Value) -> TypeDef {
                 .collect()
         })
         .unwrap_or_default();
-    TypeDef { name: name.to_string(), fields }
+    TypeDef {
+        name: name.to_string(),
+        fields,
+    }
 }
 
 fn json_schema<'a>(doc: &'a Value, container: &'a Value) -> Option<&'a Value> {
@@ -110,13 +132,16 @@ fn json_schema<'a>(doc: &'a Value, container: &'a Value) -> Option<&'a Value> {
 }
 
 fn operation(doc: &Value, path: &str, method: &str, item: &Value, op: &Value) -> Operation {
-    let id = op["operationId"].as_str().map(str::to_string).unwrap_or_else(|| {
-        let slug: String = path
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        format!("{method}{slug}")
-    });
+    let id = op["operationId"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let slug: String = path
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            format!("{method}{slug}")
+        });
 
     let mut params = Vec::new();
     for list in [&item["parameters"], &op["parameters"]] {
@@ -130,11 +155,15 @@ fn operation(doc: &Value, path: &str, method: &str, item: &Value, op: &Value) ->
             };
             let name = p["name"].as_str().unwrap_or_default().to_string();
             // Operation-level params override path-level ones of the same name.
-            params.retain(|x: &Param| !(x.name == name && std::mem::discriminant(&x.location) == std::mem::discriminant(&location)));
+            params.retain(|x: &Param| {
+                !(x.name == name
+                    && std::mem::discriminant(&x.location) == std::mem::discriminant(&location))
+            });
             params.push(Param {
                 name,
                 location,
-                required: p["required"].as_bool().unwrap_or(false) || matches!(location, ParamLocation::Path),
+                required: p["required"].as_bool().unwrap_or(false)
+                    || matches!(location, ParamLocation::Path),
                 ty: type_ref(doc, &p["schema"]),
             });
         }
@@ -155,7 +184,14 @@ fn operation(doc: &Value, path: &str, method: &str, item: &Value, op: &Value) ->
         })
         .unwrap_or_default();
 
-    Operation { id, method: method.to_uppercase(), path: path.to_string(), params, request, responses }
+    Operation {
+        id,
+        method: method.to_uppercase(),
+        path: path.to_string(),
+        params,
+        request,
+        responses,
+    }
 }
 
 /// Group by first tag, else first non-parameter path segment.
@@ -217,9 +253,26 @@ components:
         assert!(get.params[0].required);
         assert_eq!(get.responses.len(), 2);
         let user = &api.types[0];
-        assert!(user.fields.iter().find(|f| f.name == "email").unwrap().required);
-        assert!(user.fields.iter().find(|f| f.name == "age").unwrap().nullable);
-        let post = &api.resources.iter().find(|r| r.name == "users").unwrap().operations[0];
+        assert!(
+            user.fields
+                .iter()
+                .find(|f| f.name == "email")
+                .unwrap()
+                .required
+        );
+        assert!(
+            user.fields
+                .iter()
+                .find(|f| f.name == "age")
+                .unwrap()
+                .nullable
+        );
+        let post = &api
+            .resources
+            .iter()
+            .find(|r| r.name == "users")
+            .unwrap()
+            .operations[0];
         assert_eq!(post.id, "post_users");
     }
 

@@ -4,16 +4,19 @@ use sdkforge_planner::SdkPlan;
 
 mod claude;
 mod fidelity;
+mod files;
 mod maintain;
 mod port;
-mod files;
 
 pub use claude::{Claude, ClaudeError};
-pub use port::{driver_fix_prompt, driver_prompt, scenarios_prompt, module_prompt, plan_prompt, surface_missing, target_rules, tests_prompt, Source, PLAN_SYSTEM};
-pub use maintain::{extract_diff, patch_prompt, repro_prompt, DIFF_SYSTEM};
 pub use fidelity::check as check_fidelity;
 pub use files::{camel, pascal, snake};
 pub use files::{parse_files, redact, GeneratedFile};
+pub use maintain::{extract_diff, patch_prompt, repro_prompt, DIFF_SYSTEM};
+pub use port::{
+    driver_fix_prompt, driver_prompt, module_prompt, plan_prompt, scenarios_prompt,
+    surface_missing, target_rules, tests_prompt, Source, PLAN_SYSTEM,
+};
 
 pub const SYSTEM: &str = "You are an expert SDK engineer. Output ONLY files, each as:\n\
 === FILE: relative/path ===\n<file contents>\n=== END ===\n\
@@ -34,13 +37,33 @@ fn common(plan: &SdkPlan, instructions: &str) -> String {
 fn resource_files(lang: &str, pkg: &str, name: &str) -> (String, String, String) {
     let (snake, pascal, camel) = (files::snake(name), files::pascal(name), files::camel(name));
     match lang {
-        "node" => (format!("src/resources/{snake}.js"), format!("test/{snake}.test.js"), format!("{pascal}Resource")),
-        "go" => (format!("{snake}.go"), format!("{snake}_test.go"), format!("{pascal}Service")),
-        "php" => (format!("src/Resources/{pascal}Resource.php"), format!("tests/{pascal}ResourceTest.php"), format!("{pascal}Resource")),
-        "rust" => (format!("src/resources/{snake}.rs"), format!("tests/{snake}.rs"), format!("{pascal}Resource")),
+        "node" => (
+            format!("src/resources/{snake}.js"),
+            format!("test/{snake}.test.js"),
+            format!("{pascal}Resource"),
+        ),
+        "go" => (
+            format!("{snake}.go"),
+            format!("{snake}_test.go"),
+            format!("{pascal}Service"),
+        ),
+        "php" => (
+            format!("src/Resources/{pascal}Resource.php"),
+            format!("tests/{pascal}ResourceTest.php"),
+            format!("{pascal}Resource"),
+        ),
+        "rust" => (
+            format!("src/resources/{snake}.rs"),
+            format!("tests/{snake}.rs"),
+            format!("{pascal}Resource"),
+        ),
         _ => {
             let _ = camel;
-            (format!("{pkg}/resources/{snake}.py"), format!("tests/test_{snake}.py"), format!("{pascal}Resource"))
+            (
+                format!("{pkg}/resources/{snake}.py"),
+                format!("tests/test_{snake}.py"),
+                format!("{pascal}Resource"),
+            )
         }
     }
 }
@@ -82,7 +105,10 @@ pub fn request_files(claude: &mut Claude, prompt: &str) -> Result<Vec<GeneratedF
     request_files_with(claude, prompt)
 }
 
-pub fn request_files_with(claude: &mut Claude, prompt: &str) -> Result<Vec<GeneratedFile>, ClaudeError> {
+pub fn request_files_with(
+    claude: &mut Claude,
+    prompt: &str,
+) -> Result<Vec<GeneratedFile>, ClaudeError> {
     let files = parse_files(&claude.complete(SYSTEM, prompt)?);
     if !files.is_empty() {
         return Ok(files);
@@ -94,7 +120,11 @@ pub fn request_files_with(claude: &mut Claude, prompt: &str) -> Result<Vec<Gener
 /// The slice of the IR a resource needs: the resource plus the types it names.
 fn slice(api: &Api, resource: &Resource) -> String {
     let res = serde_json::to_string_pretty(resource).unwrap_or_default();
-    let types: Vec<_> = api.types.iter().filter(|t| res.contains(&format!("\"{}\"", t.name))).collect();
+    let types: Vec<_> = api
+        .types
+        .iter()
+        .filter(|t| res.contains(&format!("\"{}\"", t.name)))
+        .collect();
     format!(
         "Resource:\n{res}\nTypes:\n{}",
         serde_json::to_string_pretty(&types).unwrap_or_default()
@@ -103,9 +133,15 @@ fn slice(api: &Api, resource: &Resource) -> String {
 
 /// Test cases derived mechanically from the IR, not left to the model's imagination.
 pub fn derive_cases(op: &Operation) -> Vec<String> {
-    let mut cases = vec![format!("happy path: {} {} returns the declared success body", op.method, op.path)];
+    let mut cases = vec![format!(
+        "happy path: {} {} returns the declared success body",
+        op.method, op.path
+    )];
     for p in op.params.iter().filter(|p| p.required) {
-        cases.push(format!("missing required parameter `{}` raises a validation error before any request", p.name));
+        cases.push(format!(
+            "missing required parameter `{}` raises a validation error before any request",
+            p.name
+        ));
     }
     for r in op.responses.iter().filter(|r| r.status >= 400) {
         cases.push(format!("HTTP {} maps to a typed SDK error", r.status));
@@ -140,7 +176,11 @@ pub fn chunk_prompt(api: &Api, plan: &SdkPlan, resource: &Resource, instructions
     let cases: Vec<String> = resource
         .operations
         .iter()
-        .flat_map(|o| derive_cases(o).into_iter().map(move |c| format!("- {}: {c}", o.id)))
+        .flat_map(|o| {
+            derive_cases(o)
+                .into_iter()
+                .map(move |c| format!("- {}: {c}", o.id))
+        })
         .collect();
     format!(
         "{}{}\nGenerate `{impl_path}` (type `{ty}`) implementing every operation of this resource through the client's `request` method, and `{test_path}` \

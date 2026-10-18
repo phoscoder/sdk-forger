@@ -1,6 +1,8 @@
 //! Shared by the Postman and Bruno adapters: both describe an API as example requests,
 //! so types are inferred deterministically from the example JSON.
-use sdkforge_ir::{Api, Field, Operation, Param, ParamLocation, Resource, Response, TypeDef, TypeRef};
+use sdkforge_ir::{
+    Api, Field, Operation, Param, ParamLocation, Resource, Response, TypeDef, TypeRef,
+};
 use serde_json::Value;
 
 pub struct RawRequest {
@@ -20,7 +22,9 @@ pub fn pascal(s: &str) -> String {
         .filter(|w| !w.is_empty())
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                .unwrap_or_default()
         })
         .collect()
 }
@@ -28,7 +32,9 @@ pub fn pascal(s: &str) -> String {
 fn camel(s: &str) -> String {
     let p = pascal(s);
     let mut c = p.chars();
-    c.next().map(|f| f.to_ascii_lowercase().to_string() + c.as_str()).unwrap_or_default()
+    c.next()
+        .map(|f| f.to_ascii_lowercase().to_string() + c.as_str())
+        .unwrap_or_default()
 }
 
 /// Strip `{{var}}` / scheme / host prefix, drop the query string, turn `:id` into `{id}`.
@@ -68,7 +74,14 @@ fn infer(api: &mut Api, name: &str, v: &Value) -> (TypeRef, bool) {
     match v {
         Value::Null => (TypeRef::Any, true),
         Value::Bool(_) => (TypeRef::Boolean, false),
-        Value::Number(n) => (if n.is_i64() || n.is_u64() { TypeRef::Integer } else { TypeRef::Number }, false),
+        Value::Number(n) => (
+            if n.is_i64() || n.is_u64() {
+                TypeRef::Integer
+            } else {
+                TypeRef::Number
+            },
+            false,
+        ),
         Value::String(_) => (TypeRef::String, false),
         Value::Array(a) => {
             let inner = a.first().map_or(TypeRef::Any, |f| infer(api, name, f).0);
@@ -80,11 +93,19 @@ fn infer(api: &mut Api, name: &str, v: &Value) -> (TypeRef, bool) {
                 .map(|(k, fv)| {
                     let (ty, nullable) = infer(api, &format!("{name}{}", pascal(k)), fv);
                     // One example cannot prove optionality, so every seen field is required.
-                    Field { name: k.clone(), ty, required: true, nullable }
+                    Field {
+                        name: k.clone(),
+                        ty,
+                        required: true,
+                        nullable,
+                    }
                 })
                 .collect();
             if !api.types.iter().any(|t| t.name == name) {
-                api.types.push(TypeDef { name: name.to_string(), fields });
+                api.types.push(TypeDef {
+                    name: name.to_string(),
+                    fields,
+                });
             }
             (TypeRef::Named(name.to_string()), false)
         }
@@ -92,7 +113,11 @@ fn infer(api: &mut Api, name: &str, v: &Value) -> (TypeRef, bool) {
 }
 
 pub fn build_api(name: &str, requests: Vec<RawRequest>) -> Api {
-    let mut api = Api { name: name.to_string(), version: "0.0.0".into(), ..Api::default() };
+    let mut api = Api {
+        name: name.to_string(),
+        version: "0.0.0".into(),
+        ..Api::default()
+    };
     let mut seen_ids: Vec<String> = Vec::new();
 
     for r in requests {
@@ -112,33 +137,62 @@ pub fn build_api(name: &str, requests: Vec<RawRequest>) -> Api {
         let mut params: Vec<Param> = path
             .split('/')
             .filter_map(|s| s.strip_prefix('{')?.strip_suffix('}'))
-            .map(|n| Param { name: n.to_string(), location: ParamLocation::Path, required: true, ty: TypeRef::String })
+            .map(|n| Param {
+                name: n.to_string(),
+                location: ParamLocation::Path,
+                required: true,
+                ty: TypeRef::String,
+            })
             .collect();
         for (k, v) in &r.query {
             if !params.iter().any(|p| p.name == *k) {
-                params.push(Param { name: k.clone(), location: ParamLocation::Query, required: false, ty: scalar_type(v) });
+                params.push(Param {
+                    name: k.clone(),
+                    location: ParamLocation::Query,
+                    required: false,
+                    ty: scalar_type(v),
+                });
             }
         }
 
-        let request = r.body.as_ref().map(|b| infer(&mut api, &format!("{}Request", pascal(&id)), b).0);
+        let request = r
+            .body
+            .as_ref()
+            .map(|b| infer(&mut api, &format!("{}Request", pascal(&id)), b).0);
         let responses = r
             .responses
             .iter()
             .map(|(status, body)| Response {
                 status: *status,
-                body: body.as_ref().map(|b| infer(&mut api, &format!("{}Response", pascal(&id)), b).0),
+                body: body
+                    .as_ref()
+                    .map(|b| infer(&mut api, &format!("{}Response", pascal(&id)), b).0),
             })
             .collect();
 
         let group = r
             .folder
             .clone()
-            .or_else(|| path.split('/').find(|s| !s.is_empty() && !s.starts_with('{')).map(str::to_string))
+            .or_else(|| {
+                path.split('/')
+                    .find(|s| !s.is_empty() && !s.starts_with('{'))
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| "default".into());
-        let op = Operation { id, method: r.method.to_uppercase(), path, params, request, responses };
+        let op = Operation {
+            id,
+            method: r.method.to_uppercase(),
+            path,
+            params,
+            request,
+            responses,
+        };
         match api.resources.iter_mut().find(|x| x.name == group) {
             Some(x) => x.operations.push(op),
-            None => api.resources.push(Resource { name: group, operations: vec![op] }),
+            None => api.resources.push(Resource {
+                name: group,
+                operations: vec![op],
+            }),
         }
     }
     api

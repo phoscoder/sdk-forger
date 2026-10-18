@@ -92,14 +92,24 @@ fn looks_like_path(norm: &str) -> bool {
     norm.len() > 1
         && norm.starts_with('/')
         && !norm.contains("//")
-        && norm.chars().all(|c| c.is_ascii_alphanumeric() || "_-.{}/~".contains(c))
+        && norm
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-.{}/~".contains(c))
 }
 
 /// Problems found, one per invented path. Empty means the code only uses paths from the IR.
 pub fn check(api: &Api, lang: &str, files: &[GeneratedFile]) -> Vec<String> {
-    let known: Vec<String> = api.resources.iter().flat_map(|r| &r.operations).map(|o| normalize(&o.path)).collect();
+    let known: Vec<String> = api
+        .resources
+        .iter()
+        .flat_map(|r| &r.operations)
+        .map(|o| normalize(&o.path))
+        .collect();
     let mut problems = Vec::new();
-    for f in files.iter().filter(|f| !crate::port::is_test_path(&f.path) && is_code(&f.path)) {
+    for f in files
+        .iter()
+        .filter(|f| !crate::port::is_test_path(&f.path) && is_code(&f.path))
+    {
         for lit in literals(&f.content, lang) {
             let n = normalize(&lit);
             if !looks_like_path(&n) {
@@ -108,10 +118,15 @@ pub fn check(api: &Api, lang: &str, files: &[GeneratedFile]) -> Vec<String> {
             // Equal, a leading piece of a longer path ("/pets" or "/pets/" + id),
             // or a trailing piece ("/items" appended after the id).
             let ok = known.iter().any(|p| {
-                *p == n || (p.starts_with(&n) && (n.ends_with('/') || p[n.len()..].starts_with('/'))) || p.ends_with(&n)
+                *p == n
+                    || (p.starts_with(&n) && (n.ends_with('/') || p[n.len()..].starts_with('/')))
+                    || p.ends_with(&n)
             });
             if !ok {
-                problems.push(format!("{}: uses the path \"{lit}\", which is not in the API model", f.path));
+                problems.push(format!(
+                    "{}: uses the path \"{lit}\", which is not in the API model",
+                    f.path
+                ));
             }
         }
     }
@@ -120,7 +135,10 @@ pub fn check(api: &Api, lang: &str, files: &[GeneratedFile]) -> Vec<String> {
 }
 
 fn is_code(path: &str) -> bool {
-    matches!(path.rsplit_once('.').map(|(_, e)| e), Some("py" | "js" | "mjs" | "cjs" | "ts" | "php" | "rs" | "go"))
+    matches!(
+        path.rsplit_once('.').map(|(_, e)| e),
+        Some("py" | "js" | "mjs" | "cjs" | "ts" | "php" | "rs" | "go")
+    )
 }
 
 #[cfg(test)]
@@ -129,15 +147,28 @@ mod tests {
     use sdkforge_ir::{Operation, Resource};
 
     fn api() -> Api {
-        let op = |p: &str| Operation { id: "x".into(), method: "GET".into(), path: p.into(), params: vec![], request: None, responses: vec![] };
+        let op = |p: &str| Operation {
+            id: "x".into(),
+            method: "GET".into(),
+            path: p.into(),
+            params: vec![],
+            request: None,
+            responses: vec![],
+        };
         Api {
-            resources: vec![Resource { name: "pets".into(), operations: vec![op("/pets"), op("/pets/{id}"), op("/pets/{id}/toys")] }],
+            resources: vec![Resource {
+                name: "pets".into(),
+                operations: vec![op("/pets"), op("/pets/{id}"), op("/pets/{id}/toys")],
+            }],
             ..Api::default()
         }
     }
 
     fn file(path: &str, code: &str) -> Vec<GeneratedFile> {
-        vec![GeneratedFile { path: path.into(), content: code.into() }]
+        vec![GeneratedFile {
+            path: path.into(),
+            content: code.into(),
+        }]
     }
 
     #[test]
@@ -150,7 +181,11 @@ mod tests {
             ("rust", "a.rs", "self.client.request(\"GET\", &format!(\"/pets/{}\", id))?;\nfn f<'a>(x: &'a str) {}"),
         ];
         for (lang, path, code) in cases {
-            assert_eq!(check(&api(), lang, &file(path, code)), Vec::<String>::new(), "{lang}");
+            assert_eq!(
+                check(&api(), lang, &file(path, code)),
+                Vec::<String>::new(),
+                "{lang}"
+            );
         }
     }
 
@@ -164,6 +199,11 @@ mod tests {
     fn ignores_tests_prose_and_apostrophes() {
         let code = "# don't do this\nurl = \"https://api.x.com/anything\"\nmsg = \"not a /path with spaces\"";
         assert!(check(&api(), "python", &file("client.py", code)).is_empty());
-        assert!(check(&api(), "python", &file("tests/test_x.py", "x = \"/owners\"")).is_empty());
+        assert!(check(
+            &api(),
+            "python",
+            &file("tests/test_x.py", "x = \"/owners\"")
+        )
+        .is_empty());
     }
 }

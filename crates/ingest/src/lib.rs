@@ -8,8 +8,11 @@ mod postman;
 mod source;
 pub use bruno::Bruno;
 pub use openapi::OpenApi;
-pub use source::{detect_lang, outline, outline_python, Lang, public_names, render_outline, FileOutline, Kind, Symbol};
 pub use postman::{looks_like as looks_like_postman, Postman};
+pub use source::{
+    detect_lang, outline, outline_python, public_names, render_outline, FileOutline, Kind, Lang,
+    Symbol,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
@@ -28,7 +31,8 @@ pub fn ingest_path(path: &std::path::Path) -> Result<Api, IngestError> {
     if path.is_dir() {
         return Bruno.ingest_dir(path);
     }
-    let text = std::fs::read_to_string(path).map_err(|e| IngestError::Invalid(format!("{}: {e}", path.display())))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| IngestError::Invalid(format!("{}: {e}", path.display())))?;
     if looks_like_postman(&text) {
         Postman.ingest(&text)
     } else {

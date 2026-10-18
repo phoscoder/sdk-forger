@@ -24,7 +24,9 @@ impl Claude {
     pub fn from_env(model: Option<String>) -> Result<Self, ClaudeError> {
         let key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| ClaudeError::MissingKey)?;
         Ok(Self {
-            http: reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(600)).build()?,
+            http: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .build()?,
             key,
             model: model.unwrap_or_else(|| "claude-sonnet-5-5".into()),
             max_tokens: 16_000,
@@ -62,7 +64,10 @@ impl Claude {
         let status = resp.status();
         let body: Value = resp.json()?;
         if !status.is_success() {
-            return Err(ClaudeError::Api { status: status.as_u16(), body: body.to_string() });
+            return Err(ClaudeError::Api {
+                status: status.as_u16(),
+                body: body.to_string(),
+            });
         }
         self.tokens_used += body["usage"]["input_tokens"].as_u64().unwrap_or(0)
             + body["usage"]["output_tokens"].as_u64().unwrap_or(0);
@@ -74,8 +79,6 @@ impl Claude {
             .collect::<String>())
     }
 }
-
-
 
 fn is_transient(e: &ClaudeError) -> bool {
     match e {
@@ -91,9 +94,18 @@ mod tests {
 
     #[test]
     fn classifies_transient_errors() {
-        assert!(is_transient(&ClaudeError::Api { status: 429, body: String::new() }));
-        assert!(is_transient(&ClaudeError::Api { status: 529, body: String::new() }));
-        assert!(!is_transient(&ClaudeError::Api { status: 400, body: String::new() }));
+        assert!(is_transient(&ClaudeError::Api {
+            status: 429,
+            body: String::new()
+        }));
+        assert!(is_transient(&ClaudeError::Api {
+            status: 529,
+            body: String::new()
+        }));
+        assert!(!is_transient(&ClaudeError::Api {
+            status: 400,
+            body: String::new()
+        }));
         assert!(!is_transient(&ClaudeError::MissingKey));
     }
 }

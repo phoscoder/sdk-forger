@@ -12,23 +12,39 @@ pub enum RepoError {
 }
 
 pub trait ForgeProvider {
-    fn open_pull_request(&self, dir: &Path, branch: &str, title: &str, body: &str) -> Result<String, RepoError>;
+    fn open_pull_request(
+        &self,
+        dir: &Path,
+        branch: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<String, RepoError>;
 }
 
 /// GitHub through the `gh` CLI, which owns the user's credentials; tokens never pass through us.
 pub struct GitHub;
 
 impl ForgeProvider for GitHub {
-    fn open_pull_request(&self, dir: &Path, branch: &str, title: &str, body: &str) -> Result<String, RepoError> {
+    fn open_pull_request(
+        &self,
+        dir: &Path,
+        branch: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<String, RepoError> {
         let out = Command::new("gh")
             .current_dir(dir)
-            .args(["pr", "create", "--head", branch, "--title", title, "--body", body])
+            .args([
+                "pr", "create", "--head", branch, "--title", title, "--body", body,
+            ])
             .output()
             .map_err(|e| RepoError::Forge(format!("cannot run gh: {e}")))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
         } else {
-            Err(RepoError::Forge(String::from_utf8_lossy(&out.stderr).trim().to_string()))
+            Err(RepoError::Forge(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ))
         }
     }
 }
@@ -39,13 +55,21 @@ fn run(dir: Option<&Path>, args: &[&str], stdin: Option<&str>) -> Result<String,
         cmd.current_dir(d);
     }
     cmd.args(args)
-        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let err = |msg: String| RepoError::Git { cmd: args.join(" "), msg };
+    let err = |msg: String| RepoError::Git {
+        cmd: args.join(" "),
+        msg,
+    };
     let mut child = cmd.spawn().map_err(|e| err(e.to_string()))?;
     if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        pipe.write_all(input.as_bytes()).map_err(|e| err(e.to_string()))?;
+        pipe.write_all(input.as_bytes())
+            .map_err(|e| err(e.to_string()))?;
     }
     let out = child.wait_with_output().map_err(|e| err(e.to_string()))?;
     if out.status.success() {
@@ -56,15 +80,27 @@ fn run(dir: Option<&Path>, args: &[&str], stdin: Option<&str>) -> Result<String,
 }
 
 pub fn clone(url: &str, dest: &Path) -> Result<(), RepoError> {
-    run(None, &["clone", "--quiet", "--", url, &dest.to_string_lossy()], None).map(|_| ())
+    run(
+        None,
+        &["clone", "--quiet", "--", url, &dest.to_string_lossy()],
+        None,
+    )
+    .map(|_| ())
 }
 
 pub fn current_branch(dir: &Path) -> Result<String, RepoError> {
-    Ok(run(Some(dir), &["rev-parse", "--abbrev-ref", "HEAD"], None)?.trim().to_string())
+    Ok(
+        run(Some(dir), &["rev-parse", "--abbrev-ref", "HEAD"], None)?
+            .trim()
+            .to_string(),
+    )
 }
 
 pub fn tracked_files(dir: &Path) -> Result<Vec<String>, RepoError> {
-    Ok(run(Some(dir), &["ls-files"], None)?.lines().map(str::to_string).collect())
+    Ok(run(Some(dir), &["ls-files"], None)?
+        .lines()
+        .map(str::to_string)
+        .collect())
 }
 
 /// Keep sandbox artifacts out of diffs and commits without touching the repo's own .gitignore.
@@ -78,7 +114,12 @@ pub fn exclude_locally(dir: &Path, patterns: &[&str]) -> std::io::Result<()> {
 }
 
 pub fn apply_patch(dir: &Path, diff: &str) -> Result<(), RepoError> {
-    run(Some(dir), &["apply", "--recount", "--whitespace=nowarn", "-"], Some(diff)).map(|_| ())
+    run(
+        Some(dir),
+        &["apply", "--recount", "--whitespace=nowarn", "-"],
+        Some(diff),
+    )
+    .map(|_| ())
 }
 
 /// Discard uncommitted changes, including new files (ignored sandbox artifacts stay).
@@ -107,14 +148,23 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<(), RepoError> {
 /// Refuses to push the repo's default branch; Maintain mode always works on its own branch.
 pub fn push(dir: &Path, branch: &str, default_branch: &str) -> Result<(), RepoError> {
     if branch == default_branch || branch == "main" || branch == "master" {
-        return Err(RepoError::Git { cmd: "push".into(), msg: format!("refusing to push default branch `{branch}`") });
+        return Err(RepoError::Git {
+            cmd: "push".into(),
+            msg: format!("refusing to push default branch `{branch}`"),
+        });
     }
     run(Some(dir), &["push", "-u", "origin", branch], None).map(|_| ())
 }
 
 /// Pick the files most relevant to a request: keyword hits in path (weighted) and content,
 /// within a total byte budget, so the model never sees the whole codebase.
-pub fn select_files(dir: &Path, request: &str, files: &[String], max_files: usize, byte_budget: usize) -> Vec<(String, String)> {
+pub fn select_files(
+    dir: &Path,
+    request: &str,
+    files: &[String],
+    max_files: usize,
+    byte_budget: usize,
+) -> Vec<(String, String)> {
     let words: Vec<String> = request
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| w.len() > 3)
@@ -126,11 +176,17 @@ pub fn select_files(dir: &Path, request: &str, files: &[String], max_files: usiz
             let text = std::fs::read_to_string(dir.join(f)).ok()?; // skips binaries
             let lower = text.to_lowercase();
             let name = f.to_lowercase();
-            let score: usize = words.iter().map(|w| lower.matches(w.as_str()).count().min(10) + 5 * name.contains(w.as_str()) as usize).sum();
+            let score: usize = words
+                .iter()
+                .map(|w| {
+                    lower.matches(w.as_str()).count().min(10)
+                        + 5 * name.contains(w.as_str()) as usize
+                })
+                .sum();
             (score > 0).then_some((score, f, text))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|a| std::cmp::Reverse(a.0));
     let mut used = 0;
     let mut out = Vec::new();
     for (_, f, text) in scored {
@@ -186,7 +242,10 @@ diff --git a/b.txt b/b.txt\nnew file mode 100644\n--- /dev/null\n+++ b/b.txt\n@@
         assert!(shown.contains("+2") && shown.contains("b.txt"));
 
         reset_worktree(&d).unwrap();
-        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "one\ntwo\nthree\n");
+        assert_eq!(
+            std::fs::read_to_string(d.join("a.txt")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
         assert!(!d.join("b.txt").exists());
         std::fs::remove_dir_all(d).ok();
     }

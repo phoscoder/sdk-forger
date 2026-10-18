@@ -33,7 +33,9 @@ fn pascal(s: &str) -> String {
         .filter(|w| !w.is_empty())
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                .unwrap_or_default()
         })
         .collect()
 }
@@ -46,7 +48,13 @@ pub fn plan(api: &Api, language: &str) -> SdkPlan {
     let mut add = |f: String| files.push(f);
     match language {
         "node" => {
-            for f in ["package.json", "src/index.js", "src/client.js", "src/errors.js", "src/models.js"] {
+            for f in [
+                "package.json",
+                "src/index.js",
+                "src/client.js",
+                "src/errors.js",
+                "src/models.js",
+            ] {
                 add(f.into());
             }
             for r in &api.resources {
@@ -64,7 +72,13 @@ pub fn plan(api: &Api, language: &str) -> SdkPlan {
             }
         }
         "php" => {
-            for f in ["composer.json", "phpunit.xml", "tests/router.php", "src/Exception/ApiException.php", "src/Exception/ValidationException.php"] {
+            for f in [
+                "composer.json",
+                "phpunit.xml",
+                "tests/router.php",
+                "src/Exception/ApiException.php",
+                "src/Exception/ValidationException.php",
+            ] {
                 add(f.into());
             }
             add(format!("src/{client_name}.php"));
@@ -74,7 +88,14 @@ pub fn plan(api: &Api, language: &str) -> SdkPlan {
             }
         }
         "rust" => {
-            for f in ["Cargo.toml", "src/lib.rs", "src/client.rs", "src/error.rs", "src/models.rs", "src/resources/mod.rs"] {
+            for f in [
+                "Cargo.toml",
+                "src/lib.rs",
+                "src/client.rs",
+                "src/error.rs",
+                "src/models.rs",
+                "src/resources/mod.rs",
+            ] {
                 add(f.into());
             }
             for r in &api.resources {
@@ -83,7 +104,13 @@ pub fn plan(api: &Api, language: &str) -> SdkPlan {
             }
         }
         _ => {
-            for f in ["__init__.py", "client.py", "errors.py", "models.py", "resources/__init__.py"] {
+            for f in [
+                "__init__.py",
+                "client.py",
+                "errors.py",
+                "models.py",
+                "resources/__init__.py",
+            ] {
                 add(format!("{package}/{f}"));
             }
             for r in &api.resources {
@@ -92,5 +119,10 @@ pub fn plan(api: &Api, language: &str) -> SdkPlan {
             }
         }
     }
-    SdkPlan { language: language.into(), package, client_name, files }
+    SdkPlan {
+        language: language.into(),
+        package,
+        client_name,
+        files,
+    }
 }

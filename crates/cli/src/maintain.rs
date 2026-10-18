@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use sdkforge_generate::{extract_diff, patch_prompt, repro_prompt, Claude, DIFF_SYSTEM};
 use sdkforge_repo as repo;
-use sdkforge_verify::{detect, fix_loop, run_in_sandbox, Outcome, RetryPolicy, VerifyError, SANDBOX_ARTIFACTS};
+use sdkforge_verify::{
+    detect, fix_loop, run_in_sandbox, Outcome, RetryPolicy, VerifyError, SANDBOX_ARTIFACTS,
+};
 
 use crate::die;
 
@@ -59,14 +61,25 @@ fn subject(request: &str) -> String {
 }
 
 fn ask_diff(claude: &mut Claude, prompt: &str) -> Result<String, String> {
-    let reply = claude.complete(DIFF_SYSTEM, prompt).map_err(|e| e.to_string())?;
+    let reply = claude
+        .complete(DIFF_SYSTEM, prompt)
+        .map_err(|e| e.to_string())?;
     extract_diff(&reply).ok_or_else(|| "the model did not return a diff".to_string())
 }
 
 pub fn run(a: Args) {
-    let work = a.workdir.unwrap_or_else(|| std::env::temp_dir().join(format!("sdkforge-{}-{}", slug(&a.repo.rsplit('/').next().unwrap_or("repo")), std::process::id())));
+    let work = a.workdir.unwrap_or_else(|| {
+        std::env::temp_dir().join(format!(
+            "sdkforge-{}-{}",
+            slug(a.repo.rsplit('/').next().unwrap_or("repo")),
+            std::process::id()
+        ))
+    });
     if work.exists() {
-        die(&format!("{} already exists; pass a different --workdir", work.display()));
+        die(&format!(
+            "{} already exists; pass a different --workdir",
+            work.display()
+        ));
     }
     println!("cloning into {}...", work.display());
     repo::clone(&a.repo, &work).unwrap_or_else(|e| die(&e.to_string()));
@@ -82,22 +95,35 @@ pub fn run(a: Args) {
     let mut claude = Claude::from_env(a.model).unwrap_or_else(|e| die(&e.to_string()));
     let relevant = |work: &Path| repo::select_files(work, &a.request, &all, 8, 60_000);
     if relevant(&work).is_empty() {
-        println!("note: no files matched the request keywords; the model will only see the file list");
+        println!(
+            "note: no files matched the request keywords; the model will only see the file list"
+        );
     }
 
     if a.bug {
         println!("writing a failing test that reproduces the problem...");
-        let diff = ask_diff(&mut claude, &repro_prompt(&a.request, &all, &relevant(&work))).unwrap_or_else(|e| die(&e));
-        repo::apply_patch(&work, &diff).unwrap_or_else(|e| die(&format!("reproducing test did not apply: {e}")));
+        let diff = ask_diff(
+            &mut claude,
+            &repro_prompt(&a.request, &all, &relevant(&work)),
+        )
+        .unwrap_or_else(|e| die(&e));
+        repo::apply_patch(&work, &diff)
+            .unwrap_or_else(|e| die(&format!("reproducing test did not apply: {e}")));
         match run_in_sandbox(&work, &tc) {
             Ok(o) if !o.success => println!("reproduced: the new test fails as expected"),
-            Ok(_) => println!("warning: the suite passes with the new test, so the problem may not be reproduced"),
+            Ok(_) => println!(
+                "warning: the suite passes with the new test, so the problem may not be reproduced"
+            ),
             Err(e) => die(&e.to_string()),
         }
-        repo::commit_all(&work, "test: reproduce reported problem").unwrap_or_else(|e| die(&e.to_string()));
+        repo::commit_all(&work, "test: reproduce reported problem")
+            .unwrap_or_else(|e| die(&e.to_string()));
     }
 
-    let policy = RetryPolicy { max_attempts: a.max_attempts, token_budget: a.token_budget };
+    let policy = RetryPolicy {
+        max_attempts: a.max_attempts,
+        token_budget: a.token_budget,
+    };
     let claude = RefCell::new(claude);
     let mut feedback: Option<String> = None;
     for round in 1..=3 {
@@ -105,17 +131,31 @@ pub fn run(a: Args) {
         let apply_error: RefCell<Option<String>> = RefCell::new(None);
         let apply = |diff: Result<String, String>| {
             *apply_error.borrow_mut() = match diff {
-                Ok(d) => repo::apply_patch(&work, &d).err().map(|e| format!("patch did not apply: {e}")),
+                Ok(d) => repo::apply_patch(&work, &d)
+                    .err()
+                    .map(|e| format!("patch did not apply: {e}")),
                 Err(e) => Some(e),
             };
         };
-        apply(ask_diff(&mut claude.borrow_mut(), &patch_prompt(&a.request, &all, &relevant(&work), None, feedback.as_deref())));
+        apply(ask_diff(
+            &mut claude.borrow_mut(),
+            &patch_prompt(
+                &a.request,
+                &all,
+                &relevant(&work),
+                None,
+                feedback.as_deref(),
+            ),
+        ));
 
         let result = fix_loop(
             &policy,
             || {
                 if let Some(msg) = apply_error.borrow().clone() {
-                    return Ok(Outcome { success: false, output: msg });
+                    return Ok(Outcome {
+                        success: false,
+                        output: msg,
+                    });
                 }
                 println!("verifying in sandbox...");
                 run_in_sandbox(&work, &tc)
@@ -123,7 +163,13 @@ pub fn run(a: Args) {
             |err| {
                 println!("verification failed, asking for a new patch...");
                 repo::reset_worktree(&work).map_err(|e| VerifyError::Sandbox(e.to_string()))?;
-                let prompt = patch_prompt(&a.request, &all, &relevant(&work), Some(err), feedback.as_deref());
+                let prompt = patch_prompt(
+                    &a.request,
+                    &all,
+                    &relevant(&work),
+                    Some(err),
+                    feedback.as_deref(),
+                );
                 apply(ask_diff(&mut claude.borrow_mut(), &prompt));
                 Ok(())
             },
@@ -133,7 +179,10 @@ pub fn run(a: Args) {
             Ok((o, _)) if o.success => {}
             Ok((o, n)) => {
                 eprintln!("{}", o.output);
-                die(&format!("not verified after {n} attempt(s); flagged for review, repo left in {}", work.display()))
+                die(&format!(
+                    "not verified after {n} attempt(s); flagged for review, repo left in {}",
+                    work.display()
+                ))
             }
             Err(e) => die(&e.to_string()),
         }
@@ -142,7 +191,8 @@ pub fn run(a: Args) {
         println!("\n{diff}\ntests pass in the sandbox.");
         match ask_approval() {
             Verdict::Approve => {
-                repo::commit_all(&work, &format!("fix: {}", subject(&a.request))).unwrap_or_else(|e| die(&e.to_string()));
+                repo::commit_all(&work, &format!("fix: {}", subject(&a.request)))
+                    .unwrap_or_else(|e| die(&e.to_string()));
                 println!("committed on branch {branch} in {}", work.display());
                 if a.push {
                     publish(&work, &branch, &default_branch, &a.request);
@@ -169,7 +219,8 @@ fn publish(work: &Path, branch: &str, default_branch: &str, request: &str) {
     use repo::ForgeProvider;
     repo::push(work, branch, default_branch).unwrap_or_else(|e| die(&e.to_string()));
     let body = format!("{request}\n\nGenerated by SDK Forge. Tests passed in a network-isolated sandbox and the diff was approved before commit.");
-    match repo::GitHub.open_pull_request(work, branch, &format!("fix: {}", subject(request)), &body) {
+    match repo::GitHub.open_pull_request(work, branch, &format!("fix: {}", subject(request)), &body)
+    {
         Ok(url) => println!("pull request: {url}"),
         Err(e) => println!("branch pushed, but the PR could not be opened: {e}"),
     }

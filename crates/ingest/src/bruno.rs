@@ -31,7 +31,10 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<RawRequest>) -> Result<(), Ingest
     let io = |e: std::io::Error| IngestError::Invalid(format!("{}: {e}", dir.display()));
     for entry in std::fs::read_dir(dir).map_err(io)? {
         let path = entry.map_err(io)?.path();
-        let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if path.is_dir() {
             if file != "environments" && file != "node_modules" && !file.starts_with('.') {
                 walk(root, &path, out)?;
@@ -126,8 +129,16 @@ mod tests {
         std::fs::create_dir_all(d.join("pets")).unwrap();
         std::fs::create_dir_all(d.join("environments")).unwrap();
         std::fs::write(d.join("bruno.json"), r#"{"name": "Pet API"}"#).unwrap();
-        std::fs::write(d.join("environments/local.bru"), "vars {\n  baseUrl: http://x\n}\n").unwrap();
-        std::fs::write(d.join("pets/list.bru"), "meta {\n  name: List Pets\n}\n\nget {\n  url: {{baseUrl}}/pets\n}\n").unwrap();
+        std::fs::write(
+            d.join("environments/local.bru"),
+            "vars {\n  baseUrl: http://x\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("pets/list.bru"),
+            "meta {\n  name: List Pets\n}\n\nget {\n  url: {{baseUrl}}/pets\n}\n",
+        )
+        .unwrap();
         let api = Bruno.ingest_dir(&d).unwrap();
         assert_eq!(api.name, "Pet API");
         assert_eq!(api.resources[0].name, "pets");

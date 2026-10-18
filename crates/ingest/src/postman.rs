@@ -8,9 +8,12 @@ pub struct Postman;
 
 impl Ingest for Postman {
     fn ingest(&self, input: &str) -> Result<sdkforge_ir::Api, IngestError> {
-        let doc: Value = serde_json::from_str(input).map_err(|e| IngestError::Invalid(e.to_string()))?;
+        let doc: Value =
+            serde_json::from_str(input).map_err(|e| IngestError::Invalid(e.to_string()))?;
         if doc["info"].is_null() || !doc["item"].is_array() {
-            return Err(IngestError::Invalid("expected a Postman collection (`info` and `item`)".into()));
+            return Err(IngestError::Invalid(
+                "expected a Postman collection (`info` and `item`)".into(),
+            ));
         }
         let mut out = Vec::new();
         walk(&doc["item"], None, &mut out);
@@ -21,7 +24,12 @@ impl Ingest for Postman {
 
 /// True for JSON that looks like a Postman collection.
 pub fn looks_like(input: &str) -> bool {
-    serde_json::from_str::<Value>(input).is_ok_and(|d| d["info"]["schema"].as_str().is_some_and(|s| s.contains("postman")) || d["info"]["_postman_id"].is_string())
+    serde_json::from_str::<Value>(input).is_ok_and(|d| {
+        d["info"]["schema"]
+            .as_str()
+            .is_some_and(|s| s.contains("postman"))
+            || d["info"]["_postman_id"].is_string()
+    })
 }
 
 fn walk(items: &Value, folder: Option<&str>, out: &mut Vec<RawRequest>) {
@@ -41,7 +49,12 @@ fn request(item: &Value, folder: Option<&str>) -> RawRequest {
     let url = match &req["url"] {
         Value::String(s) => s.clone(),
         u => u["raw"].as_str().map(str::to_string).unwrap_or_else(|| {
-            let parts: Vec<&str> = u["path"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let parts: Vec<&str> = u["path"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
             format!("/{}", parts.join("/"))
         }),
     };
@@ -50,7 +63,12 @@ fn request(item: &Value, folder: Option<&str>) -> RawRequest {
         .into_iter()
         .flatten()
         .filter(|q| !q["disabled"].as_bool().unwrap_or(false))
-        .filter_map(|q| Some((q["key"].as_str()?.to_string(), q["value"].as_str().unwrap_or("").to_string())))
+        .filter_map(|q| {
+            Some((
+                q["key"].as_str()?.to_string(),
+                q["value"].as_str().unwrap_or("").to_string(),
+            ))
+        })
         .collect();
     let body = (req["body"]["mode"] == "raw")
         .then(|| req["body"]["raw"].as_str())
@@ -62,7 +80,12 @@ fn request(item: &Value, folder: Option<&str>) -> RawRequest {
         .flatten()
         .filter_map(|r| {
             let code = r["code"].as_u64()? as u16;
-            Some((code, r["body"].as_str().and_then(|b| serde_json::from_str(b).ok())))
+            Some((
+                code,
+                r["body"]
+                    .as_str()
+                    .and_then(|b| serde_json::from_str(b).ok()),
+            ))
         })
         .collect();
     RawRequest {
@@ -106,7 +129,11 @@ mod tests {
         assert_eq!(ops[0].params.len(), 1); // path param; `verbose` comes from url.query, not the raw string
         assert_eq!(ops[1].method, "POST");
         assert!(matches!(&ops[1].request, Some(TypeRef::Named(n)) if n == "CreateUserRequest"));
-        let resp = api.types.iter().find(|t| t.name == "GetUserResponse").unwrap();
+        let resp = api
+            .types
+            .iter()
+            .find(|t| t.name == "GetUserResponse")
+            .unwrap();
         assert!(resp.fields.iter().any(|f| f.name == "nick" && f.nullable));
         assert!(api.types.iter().any(|t| t.name == "GetUserResponseAddress"));
     }

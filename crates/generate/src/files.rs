@@ -15,7 +15,10 @@ pub fn parse_files(text: &str) -> Vec<GeneratedFile> {
                 lines.pop();
             }
             if is_safe(&path) && !lines.is_empty() {
-                out.push(GeneratedFile { path, content: lines.join("\n") + "\n" });
+                out.push(GeneratedFile {
+                    path,
+                    content: lines.join("\n") + "\n",
+                });
             }
         }
     }
@@ -37,12 +40,23 @@ pub fn parse_files(text: &str) -> Vec<GeneratedFile> {
 }
 
 fn is_safe(path: &str) -> bool {
-    !path.is_empty() && Path::new(path).components().all(|c| matches!(c, Component::Normal(_)))
+    !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
 }
 
 /// Mask values of credential-looking keys and bearer tokens before text reaches the model.
 pub fn redact(text: &str) -> String {
-    const KEYS: [&str; 7] = ["api_key", "apikey", "token", "secret", "password", "authorization", "x-api-key"];
+    const KEYS: [&str; 7] = [
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+        "x-api-key",
+    ];
     text.lines()
         .map(|line| {
             let lower = line.to_lowercase();
@@ -85,7 +99,9 @@ pub fn pascal(name: &str) -> String {
         .filter(|w| !w.is_empty())
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                .unwrap_or_default()
         })
         .collect()
 }
@@ -93,7 +109,9 @@ pub fn pascal(name: &str) -> String {
 pub fn camel(name: &str) -> String {
     let p = pascal(name);
     let mut c = p.chars();
-    c.next().map(|f| f.to_ascii_lowercase().to_string() + c.as_str()).unwrap_or_default()
+    c.next()
+        .map(|f| f.to_ascii_lowercase().to_string() + c.as_str())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -102,7 +120,8 @@ mod tests {
 
     #[test]
     fn parses_blocks_and_drops_traversal() {
-        let t = "=== FILE: a/b.py ===\nx = 1\n=== END ===\n=== FILE: ../evil ===\nno\n=== END ===\n";
+        let t =
+            "=== FILE: a/b.py ===\nx = 1\n=== END ===\n=== FILE: ../evil ===\nno\n=== END ===\n";
         let f = parse_files(t);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].path, "a/b.py");
@@ -113,7 +132,10 @@ mod tests {
     fn tolerates_missing_end_markers() {
         let t = "=== FILE: a.php ===\n<?php\n\n=== FILE: b.php ===\n<?php echo 1;\n=== END ===\n=== FILE: c.php ===\nlast\n";
         let f = parse_files(t);
-        assert_eq!(f.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(), ["a.php", "b.php", "c.php"]);
+        assert_eq!(
+            f.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
+            ["a.php", "b.php", "c.php"]
+        );
         assert_eq!(f[0].content, "<?php\n");
         assert_eq!(f[2].content, "last\n");
     }

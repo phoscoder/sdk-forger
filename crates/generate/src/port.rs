@@ -25,11 +25,17 @@ Use `Result<T, Error>` with a typed `Error` enum implementing `std::error::Error
 }
 
 fn render(files: &[(String, String)]) -> String {
-    files.iter().map(|(p, c)| format!("=== SOURCE FILE: {p} ===\n{c}\n")).collect()
+    files
+        .iter()
+        .map(|(p, c)| format!("=== SOURCE FILE: {p} ===\n{c}\n"))
+        .collect()
 }
 
 fn render_generated(files: &[GeneratedFile]) -> String {
-    files.iter().map(|f| format!("=== FILE: {} ===\n{}\n", f.path, f.content)).collect()
+    files
+        .iter()
+        .map(|f| format!("=== FILE: {} ===\n{}\n", f.path, f.content))
+        .collect()
 }
 
 pub struct Source<'a> {
@@ -71,7 +77,12 @@ pub fn tests_prompt(s: &Source, plan: &str, tests: &[(String, String)]) -> Strin
     )
 }
 
-pub fn module_prompt(s: &Source, plan: &str, tests: &[GeneratedFile], module: &(String, String)) -> String {
+pub fn module_prompt(
+    s: &Source,
+    plan: &str,
+    tests: &[GeneratedFile],
+    module: &(String, String),
+) -> String {
     format!(
         "{}\nPlan:\n{plan}\n\nPorted tests (already written, must pass):\n{}\nImplement the target code for this source module, following the plan's names. \
 Reuse files other modules will produce; do not duplicate shared code. Output only implementation files (no tests).\n\n{}",
@@ -103,10 +114,24 @@ If the SDK verifies the integrity of responses (a signed hash for example), scri
 }
 
 /// A driver for the original (`plan` None) or the port (`plan` Some).
-pub fn driver_prompt(s: &Source, lang: &str, path: &str, scenarios: &str, plan: Option<&str>, code: &[GeneratedFile], tests: &[(String, String)]) -> String {
+pub fn driver_prompt(
+    s: &Source,
+    lang: &str,
+    path: &str,
+    scenarios: &str,
+    plan: Option<&str>,
+    code: &[GeneratedFile],
+    tests: &[(String, String)],
+) -> String {
     let who = match plan {
-        Some(p) => format!("the PORTED {lang} SDK, using the names in this plan:\n{p}\n\nPorted code:\n{}", render_generated(code)),
-        None => format!("the ORIGINAL {lang} SDK (call it exactly as the original tests do):\n{}", render(tests)),
+        Some(p) => format!(
+            "the PORTED {lang} SDK, using the names in this plan:\n{p}\n\nPorted code:\n{}",
+            render_generated(code)
+        ),
+        None => format!(
+            "the ORIGINAL {lang} SDK (call it exactly as the original tests do):\n{}",
+            render(tests)
+        ),
     };
     format!(
         "{}{}\nWrite ONE file `{path}` in {lang} that drives {who}\n\nScenarios:\n{scenarios}\n\n{DRIVER_CONTRACT}\nOutput only that file.",
@@ -122,9 +147,18 @@ pub fn driver_fix_prompt(path: &str, current: &str, output: &str) -> String {
 /// Every public symbol of the source should still exist in the port, under any casing.
 pub fn surface_missing(names: &[String], files: &[GeneratedFile]) -> Vec<String> {
     fn norm(s: &str) -> String {
-        s.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_lowercase()).collect()
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
     }
-    let haystack = norm(&files.iter().filter(|f| !is_test_path(&f.path)).map(|f| f.content.as_str()).collect::<String>());
+    let haystack = norm(
+        &files
+            .iter()
+            .filter(|f| !is_test_path(&f.path))
+            .map(|f| f.content.as_str())
+            .collect::<String>(),
+    );
     names
         .iter()
         // Short names ("get", "list") match almost anything, so they prove nothing.
@@ -135,7 +169,12 @@ pub fn surface_missing(names: &[String], files: &[GeneratedFile]) -> Vec<String>
 }
 
 pub(crate) fn is_test_path(p: &str) -> bool {
-    p.starts_with("test") || p.contains("/test") || p.ends_with("_test.go") || p.contains(".test.") || p.ends_with("Test.php") || p.starts_with("parity/")
+    p.starts_with("test")
+        || p.contains("/test")
+        || p.ends_with("_test.go")
+        || p.contains(".test.")
+        || p.ends_with("Test.php")
+        || p.starts_with("parity/")
 }
 
 #[cfg(test)]
@@ -143,13 +182,27 @@ mod tests {
     use super::*;
 
     fn f(path: &str, content: &str) -> GeneratedFile {
-        GeneratedFile { path: path.into(), content: content.into() }
+        GeneratedFile {
+            path: path.into(),
+            content: content.into(),
+        }
     }
 
     #[test]
     fn surface_check_ignores_casing_and_tests() {
-        let names = vec!["get_user".to_string(), "ListAllPets".to_string(), "retry_after".to_string(), "get".to_string()];
-        let files = vec![f("client.go", "func (c *Client) GetUser() {}\nfunc ListAllPets() {}"), f("client_test.go", "retryAfter")];
+        let names = vec![
+            "get_user".to_string(),
+            "ListAllPets".to_string(),
+            "retry_after".to_string(),
+            "get".to_string(),
+        ];
+        let files = vec![
+            f(
+                "client.go",
+                "func (c *Client) GetUser() {}\nfunc ListAllPets() {}",
+            ),
+            f("client_test.go", "retryAfter"),
+        ];
         // retry_after only appears in a test file; `get` is too short to check.
         assert_eq!(surface_missing(&names, &files), ["retry_after"]);
     }

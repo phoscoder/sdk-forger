@@ -53,43 +53,15 @@ code, and Docker runs everything it wrote.
 
 ```mermaid
 flowchart LR
-    subgraph In["Inputs"]
-        OA["OpenAPI"]
-        PM["Postman"]
-        BR["Bruno"]
-        REPO["Existing SDK repo"]
-    end
+    IN["OpenAPI, Postman,<br>Bruno or SDK repo"] --> ING[ingest]
+    ING --> IR[model]
+    IR --> GEN[generate]
+    GEN --> VER[verify]
+    GEN <--> CL(("Claude"))
+    VER <--> DK(("Docker"))
 
-    subgraph Engine["Engine crates"]
-        ING["ingest<br/>spec adapters and tree-sitter"]
-        IR["ir<br/>intermediate model"]
-        PLAN["planner"]
-        GEN["generate<br/>prompts and Claude client"]
-        VER["verify<br/>Docker sandbox and fix loop"]
-        MOCK["mock<br/>recording server and traffic compare"]
-        GIT["repo<br/>git and forge"]
-    end
-
-    CLI["cli<br/>sdkforge-cli"]
-    APP["app<br/>GPUI desktop, not built yet"]
-
-    OA --> ING
-    PM --> ING
-    BR --> ING
-    REPO --> ING
-    ING --> IR
-    IR --> PLAN
-    PLAN --> GEN
-    GEN -->|"files and diffs"| VER
-    VER --> MOCK
-    CLI --> GEN
-    CLI --> VER
-    CLI --> GIT
-    APP -.-> CLI
-
-    GEN <-->|"Messages API"| CLAUDE(["Claude"])
-    VER <-->|"docker CLI"| DOCKER(["Docker"])
-    GIT <-->|"git, gh"| FORGE(["GitHub"])
+    classDef ext fill:#e0e7ff,stroke:#6366f1,color:#312e81
+    class CL,DK ext
 ```
 
 ### The verify and fix loop
@@ -98,36 +70,33 @@ Every mode ends in the same loop. A failure is fed back to the model; after the 
 budget the run is flagged for review instead of shipped.
 
 ```mermaid
-flowchart TD
-    A["Model output: files or a diff"] --> B{"Spec and surface check"}
-    B -->|"invented endpoint or missing symbol"| F["Failure text"]
-    B -->|ok| C["Install dependencies<br/>network on"]
-    C --> D["Run tests<br/>network off, no secrets"]
-    D -->|fail| F
-    D -->|pass| E{"Port mode?"}
-    E -->|yes| P["Traffic parity check"]
-    E -->|no| OK(["Verified"])
-    P -->|differs| F
-    P -->|same| OK
-    F --> G{"Attempts or token<br/>budget left?"}
-    G -->|yes| H["Ask the model for a fix"]
-    H --> A
-    G -->|no| X(["Flagged for review"])
+flowchart LR
+    A[Model output] --> B{"Checks and<br>tests pass?"}
+    B -- yes --> V[Verified]
+    B -- no --> C{Attempts left?}
+    C -- yes --> D[Model fixes it]
+    D --> A
+    C -- no --> F[Flagged for review]
+
+    classDef good fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class V good
+    class F bad
 ```
 
 ### Generate
 
 ```mermaid
-flowchart TD
-    S["Spec: OpenAPI, Postman or Bruno"] --> P1["Parse into the intermediate model"]
-    P1 --> P2["Plan once per language:<br/>file layout and naming"]
-    P2 --> L["For each language, in parallel"]
-    L --> C1["Generate the SDK core<br/>client, errors, models"]
-    C1 --> C2["Generate each resource separately<br/>with only its slice of the model"]
-    C2 --> T["Tests derived from the model:<br/>happy path, required fields, errors, retry"]
-    T --> V["Verify and fix loop"]
-    V -->|verified| O(["SDK in out/lang/"])
-    V -->|exhausted| R(["Flagged for review"])
+flowchart LR
+    S[Spec] --> P[Parse]
+    P --> PL["Plan<br>per language"]
+    PL --> C[Core]
+    C --> R[Resources]
+    R --> V[Verify]
+    V --> O[SDK]
+
+    classDef good fill:#d1fae5,stroke:#059669,color:#064e3b
+    class O good
 ```
 
 Test cases are derived mechanically from the model rather than left to the model's imagination, and the
@@ -137,23 +106,17 @@ fidelity check rejects any API path in the generated code that is not in the spe
 
 ```mermaid
 flowchart TD
-    A["Clone the repo, create a branch"] --> B["Detect language, build and test commands<br/>or read .sdkforge.toml"]
-    B --> C["Pick the files relevant to the request"]
-    C --> D{"Bug?"}
-    D -->|yes| E["Write a failing test that reproduces it<br/>and confirm it fails"]
-    D -->|no| F
-    E --> F["Model returns a unified diff"]
-    F --> G["Apply and verify in the sandbox"]
-    G -->|fails| H["Revert and ask for a new patch"]
-    H --> F
-    G -->|passes| I["Show the diff"]
-    I --> J{"You approve?"}
-    J -->|"feedback"| F
-    J -->|no| X(["Abort, nothing committed"])
-    J -->|yes| K["Commit on the new branch"]
-    K --> L{"--push?"}
-    L -->|yes| M["Push the branch, open a PR<br/>never the default branch"]
-    L -->|no| N(["Done locally"])
+    A[Clone and branch] --> B["Write a failing test<br>(bugs only)"]
+    B --> C[Model writes a diff]
+    C --> D[Verify in sandbox]
+    D -- fails --> C
+    D -- passes --> E{You approve?}
+    E -- changes requested --> C
+    E -- yes --> F[Commit on new branch]
+    F --> G["Push and open PR<br>(--push only)"]
+
+    classDef good fill:#d1fae5,stroke:#059669,color:#064e3b
+    class G good
 ```
 
 ### Port
@@ -162,19 +125,18 @@ The original's tests are ported first and define correct behaviour; a recorded-t
 checks that the port sends the same HTTP requests as the original.
 
 ```mermaid
-flowchart TD
-    A["Clone the source SDK"] --> B["Read its public API with tree-sitter"]
-    B --> C["Plan the port:<br/>idiomatic names in the target language"]
-    C --> D["Port the original tests first"]
-    D --> E["Port each source module"]
-    E --> F["Design shared traffic scenarios"]
-    F --> G["Drive the original SDK<br/>and record its requests"]
-    G --> H["Verify the port:<br/>surface check, ported tests, then traffic compare"]
-    H -->|differs| I["Fix the port"]
-    I --> H
-    H -->|same| J(["Ported SDK"])
-    H -->|"difference is intended"| K["--accept-diff scenario_id"]
-    K --> J
+flowchart LR
+    A[Read source API] --> B[Plan]
+    B --> C[Port tests first]
+    C --> D[Port code]
+    D --> E[Verify]
+    E --> F{Same HTTP<br>traffic?}
+    F -- no --> G[Fix the port]
+    G --> E
+    F -- yes --> H[Ported SDK]
+
+    classDef good fill:#d1fae5,stroke:#059669,color:#064e3b
+    class H good
 ```
 
 ### Traffic parity
@@ -184,19 +146,16 @@ with no internet access. The recorded requests are compared one by one.
 
 ```mermaid
 sequenceDiagram
-    participant D as Driver program
-    participant S as SDK under test
-    participant R as Recording server
-    Note over D,R: internal Docker network, no internet
+    participant D as Driver
+    participant S as SDK
+    participant R as Recorder
     loop each scenario
-        D->>R: POST /__scenario with scripted replies
-        D->>S: call the SDK function
+        D->>R: script the replies
+        D->>S: call the SDK
         S->>R: HTTP request
-        R-->>S: next scripted reply
-        D->>R: POST /__outcome (ok or error)
+        R-->>S: scripted reply
     end
-    Note over R: log of requests and outcomes
-    R-->>D: compared with the original's log
+    R-->>D: log compared with the original
 ```
 
 ## Safety rules

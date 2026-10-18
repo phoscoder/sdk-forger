@@ -1,0 +1,19 @@
+openapi: 3.0.3
+info: { title: Mini Pets, version: "1.0.0" }
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      parameters: [{ name: limit, in: query, schema: { type: integer } }]
+      responses: { "200": { content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Pet" } } } } } }
+  /pets/{id}:
+    get:
+      operationId: getPet
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Pet" } } } } }
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      properties: { id: { type: string }, name: { type: string } }

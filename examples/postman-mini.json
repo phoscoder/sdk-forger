@@ -1,0 +1,9 @@
+{
+  "info": { "name": "Mini Pets", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+  "item": [{ "name": "pets", "item": [
+    { "name": "List Pets", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/pets?limit=10", "query": [{ "key": "limit", "value": "10" }] } },
+      "response": [{ "code": 200, "body": "[{\"id\": \"1\", \"name\": \"Rex\"}]" }] },
+    { "name": "Create Pet", "request": { "method": "POST", "url": "{{baseUrl}}/pets", "body": { "mode": "raw", "raw": "{\"name\": \"Rex\", \"age\": 3}" } },
+      "response": [{ "code": 201, "body": "{\"id\": \"1\", \"name\": \"Rex\", \"age\": 3}" }] }
+  ]}]
+}

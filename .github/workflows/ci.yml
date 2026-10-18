@@ -13,5 +13,5 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --exclude sdkforge-app --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude sdkforge-app

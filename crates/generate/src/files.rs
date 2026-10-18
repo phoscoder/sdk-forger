@@ -46,8 +46,74 @@ fn is_safe(path: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_)))
 }
 
+fn looks_like_secret(word: &str) -> bool {
+    let prefixed = [
+        "sk-",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "xoxa-",
+    ]
+    .iter()
+    .any(|p| word.starts_with(p) && word.len() >= p.len() + 16);
+    let aws = word.len() == 20
+        && word.starts_with("AKIA")
+        && word
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    let jwt = word.starts_with("eyJ") && word.len() >= 30 && word.matches('.').count() == 2;
+    prefixed || aws || jwt
+}
+
+/// Mask credentials by shape rather than by key name: `user:pass@` in URLs and well-known token
+/// formats. Safe to run over spec-derived text such as base URLs and example values.
+pub fn scrub(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| c == '/' || c == '?' || c == '"' || c.is_whitespace())
+            .unwrap_or(tail.len());
+        match tail[..end].rfind('@') {
+            Some(at) => {
+                out.push_str("[REDACTED]");
+                rest = &tail[at..];
+            }
+            None => rest = tail,
+        }
+    }
+    out.push_str(rest);
+
+    let is_word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.');
+    let mut masked = String::with_capacity(out.len());
+    let mut word = String::new();
+    for c in out.chars().chain(std::iter::once('\0')) {
+        if c != '\0' && is_word(c) {
+            word.push(c);
+            continue;
+        }
+        masked.push_str(&if looks_like_secret(word.trim_end_matches('.')) {
+            "[REDACTED]".to_string()
+        } else {
+            std::mem::take(&mut word)
+        });
+        word.clear();
+        if c != '\0' {
+            masked.push(c);
+        }
+    }
+    masked
+}
+
 /// Mask values of credential-looking keys and bearer tokens before text reaches the model.
 pub fn redact(text: &str) -> String {
+    let text = scrub(text);
     const KEYS: [&str; 7] = [
         "api_key",
         "apikey",
@@ -145,6 +211,21 @@ mod tests {
         let r = redact("api_key: sk-123\nname: ok\nAuthorization: Bearer abc");
         assert!(!r.contains("sk-123") && !r.contains("abc"));
         assert!(r.contains("name: ok"));
+    }
+
+    #[test]
+    fn scrubs_by_shape() {
+        let s = scrub("base https://bob:hunter2@api.example.com/v1 key sk-abcdefghijklmnopqrstuv, id AKIAABCDEFGHIJKLMNOP.");
+        assert!(!s.contains("hunter2") && !s.contains("sk-abc") && !s.contains("AKIAABC"));
+        assert!(s.contains("@api.example.com/v1") && s.contains("https://[REDACTED]@"));
+        assert_eq!(
+            scrub("sk-short and plain words"),
+            "sk-short and plain words"
+        );
+        assert_eq!(
+            scrub("https://api.example.com/a@b"),
+            "https://api.example.com/a@b"
+        );
     }
 
     #[test]

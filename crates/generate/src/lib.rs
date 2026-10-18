@@ -11,7 +11,7 @@ mod port;
 pub use claude::{api_key, forget_api_key, store_api_key, Claude, ClaudeError};
 pub use fidelity::check as check_fidelity;
 pub use files::{camel, pascal, snake};
-pub use files::{parse_files, redact, GeneratedFile};
+pub use files::{parse_files, redact, scrub, GeneratedFile};
 pub use maintain::{extract_diff, patch_prompt, repro_prompt, DIFF_SYSTEM};
 pub use port::{
     driver_fix_prompt, driver_prompt, module_prompt, plan_prompt, scenarios_prompt,
@@ -125,10 +125,10 @@ fn slice(api: &Api, resource: &Resource) -> String {
         .iter()
         .filter(|t| res.contains(&format!("\"{}\"", t.name)))
         .collect();
-    format!(
+    scrub(&format!(
         "Resource:\n{res}\nTypes:\n{}",
         serde_json::to_string_pretty(&types).unwrap_or_default()
-    )
+    ))
 }
 
 /// Test cases derived mechanically from the IR, not left to the model's imagination.
@@ -165,9 +165,9 @@ ALL HTTP goes through ONE internal method named `request` that takes the HTTP me
 It retries with exponential backoff on 429 and 503, honouring Retry-After. Wire in these resources (other calls implement them; do NOT implement them here):\n{}\n\nTypes:\n{}",
         common(plan, instructions),
         conventions(plan),
-        api.base_url,
+        api.base_url.as_deref().map(scrub),
         resources.join("\n"),
-        serde_json::to_string_pretty(&api.types).unwrap_or_default(),
+        scrub(&serde_json::to_string_pretty(&api.types).unwrap_or_default()),
     )
 }
 

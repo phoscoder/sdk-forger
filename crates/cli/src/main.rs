@@ -19,6 +19,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Store the Anthropic API key in the system keychain (read from stdin)
+    Auth {
+        /// Remove the stored key instead
+        #[arg(long)]
+        forget: bool,
+    },
     /// Generate an SDK from an API description
     Generate {
         spec: String,
@@ -152,6 +158,21 @@ impl Host for Terminal {
 fn main() {
     let host = Terminal;
     match Cli::parse().command {
+        Command::Auth { forget } => {
+            if forget {
+                sdkforge_engine::forget_api_key().unwrap_or_else(|e| die(&e.to_string()));
+                println!("removed the stored key");
+                return;
+            }
+            eprint!("Anthropic API key (input is not saved anywhere else): ");
+            let mut key = String::new();
+            std::io::stdin().lock().read_line(&mut key).ok();
+            if key.trim().is_empty() {
+                die("no key entered");
+            }
+            sdkforge_engine::store_api_key(&key).unwrap_or_else(|e| die(&e.to_string()));
+            println!("stored in the system keychain");
+        }
         Command::Generate {
             spec,
             instructions,

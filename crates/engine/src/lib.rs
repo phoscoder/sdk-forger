@@ -21,6 +21,7 @@ pub use deliver::{deliver, DeliverRequest, Package};
 pub use generate::{generate, Delivery, GenerateRequest, LangResult};
 pub use maintain::{maintain, MaintainRequest};
 pub use port::{port, PortRequest};
+pub use sdkforge_generate::{api_key, forget_api_key, store_api_key};
 
 /// Anything that went wrong in a pipeline, as a message for the user.
 #[derive(Debug, Clone, PartialEq, Eq)]

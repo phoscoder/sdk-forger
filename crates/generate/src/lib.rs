@@ -8,7 +8,7 @@ mod files;
 mod maintain;
 mod port;
 
-pub use claude::{Claude, ClaudeError};
+pub use claude::{api_key, forget_api_key, store_api_key, Claude, ClaudeError};
 pub use fidelity::check as check_fidelity;
 pub use files::{camel, pascal, snake};
 pub use files::{parse_files, redact, GeneratedFile};

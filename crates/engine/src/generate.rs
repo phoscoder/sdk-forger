@@ -8,6 +8,7 @@ use sdkforge_ingest::Lang;
 use sdkforge_ir::Api;
 use sdkforge_verify::{fix_loop, for_target, run_in_sandbox, Outcome, RetryPolicy, VerifyError};
 
+use crate::deliver::{deliver, DeliverRequest, Package};
 use crate::{merge, write_files, Ctx, EngineError, Host, Log, Result};
 
 pub struct GenerateRequest {
@@ -21,6 +22,13 @@ pub struct GenerateRequest {
     pub model: Option<String>,
     pub max_attempts: u32,
     pub token_budget: u64,
+    /// After a verified run: add README/metadata/CI and package the result. None skips delivery.
+    pub deliver: Option<Delivery>,
+}
+
+pub struct Delivery {
+    pub format: bool,
+    pub package: Package,
 }
 
 /// The outcome for one language: a summary on success, or why it failed.
@@ -166,10 +174,27 @@ fn generate_one(
     );
     let tokens = claude.borrow().tokens_used;
     match result {
-        Ok((o, attempts)) if o.success => Ok(format!(
-            "verified after {attempts} attempt(s), {tokens} tokens: {}",
-            out.display()
-        )),
+        Ok((o, attempts)) if o.success => {
+            let mut msg = format!(
+                "verified after {attempts} attempt(s), {tokens} tokens: {}",
+                out.display()
+            );
+            if let Some(d) = &req.deliver {
+                let delivered = deliver(
+                    log.host(),
+                    &DeliverRequest {
+                        dir: out.to_path_buf(),
+                        lang: lang.name().to_string(),
+                        api: api.clone(),
+                        format: d.format,
+                        package: d.package.clone(),
+                    },
+                )
+                .map_err(|e| format!("verified, but delivery failed: {e}"))?;
+                msg.push_str(&format!("\n{delivered}"));
+            }
+            Ok(msg)
+        }
         Ok((o, attempts)) => Err(format!(
             "not verified after {attempts} attempt(s); flagged for review, output left in {}\n{}",
             out.display(),

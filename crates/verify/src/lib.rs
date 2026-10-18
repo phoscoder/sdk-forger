@@ -201,6 +201,38 @@ fn docker(dir: &Path, network: &str, image: &str, script: &str) -> Result<Outcom
     })
 }
 
+/// Run a one-off script in `image` with the directory mounted at /work.
+/// `network` lets it fetch tools; leave it off for anything that does not need to.
+pub fn run_script(
+    dir: &Path,
+    image: &str,
+    network: bool,
+    script: &str,
+) -> Result<Outcome, VerifyError> {
+    docker(dir, if network { "bridge" } else { "none" }, image, script)
+}
+
+/// Image and script that format (and lightly lint) generated code in place, per language.
+/// PHP has no ubiquitous formatter, so it has none.
+pub fn format_recipe(lang: &str) -> Option<(&'static str, &'static str)> {
+    match lang {
+        "python" => Some((
+            "python:3.12-slim",
+            "pip install -q --target /tmp/t ruff && export PYTHONPATH=/tmp/t && python -m ruff format . && python -m ruff check --fix --exit-zero .",
+        )),
+        "node" => Some((
+            "node:22-slim",
+            "npx --yes prettier@3 --write '**/*.{js,mjs,cjs,ts,json,md}' '!node_modules/**'",
+        )),
+        "go" => Some(("golang:1.23", "gofmt -w . && GOFLAGS=-buildvcs=false go vet ./...")),
+        "rust" => Some((
+            "rust:1",
+            "export CARGO_HOME=/work/.cargo CARGO_TARGET_DIR=/work/target; rustup component add rustfmt >/dev/null 2>&1; cargo fmt",
+        )),
+        _ => None,
+    }
+}
+
 /// Install dependencies with network access.
 pub fn install(dir: &Path, tc: &Toolchain) -> Result<Outcome, VerifyError> {
     docker(dir, "bridge", &tc.image, &tc.install)

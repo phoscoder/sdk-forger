@@ -4,6 +4,7 @@
 //! interactive decision (approving a diff) goes through [`Host::approve`], so the CLI and the
 //! desktop app drive the same code.
 
+mod deliver;
 mod generate;
 mod maintain;
 mod port;
@@ -15,7 +16,8 @@ use std::sync::Mutex;
 
 use sdkforge_generate::GeneratedFile;
 
-pub use generate::{generate, GenerateRequest, LangResult};
+pub use deliver::{deliver, DeliverRequest, Package};
+pub use generate::{generate, Delivery, GenerateRequest, LangResult};
 pub use maintain::{maintain, MaintainRequest};
 pub use port::{port, PortRequest};
 
@@ -98,6 +100,10 @@ impl<'a> Log<'a> {
             host,
             scope: scope.to_string(),
         }
+    }
+
+    pub fn host(&self) -> &'a dyn Host {
+        self.host
     }
 
     fn send(&self, level: Level, message: impl Into<String>) {

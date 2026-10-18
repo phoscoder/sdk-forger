@@ -104,6 +104,7 @@ impl Session {
                         model: None,
                         max_attempts: 5,
                         token_budget: 500_000,
+                        deliver: None,
                     };
                     match sdkforge_engine::generate(h, &req) {
                         Ok(rs) => rs

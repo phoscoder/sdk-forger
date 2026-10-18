@@ -199,6 +199,12 @@ pub fn select_files(
     out
 }
 
+/// Turn `dir` into a new repository with one commit of everything in it.
+pub fn init_with_first_commit(dir: &Path, message: &str) -> Result<(), RepoError> {
+    run(Some(dir), &["init", "-q", "-b", "main"], None)?;
+    commit_all(dir, message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

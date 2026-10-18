@@ -14,3 +14,5 @@ sdkforge-verify.workspace = true
 sdkforge-mock.workspace = true
 sdkforge-repo.workspace = true
 serde_json.workspace = true
+minijinja.workspace = true
+zip.workspace = true

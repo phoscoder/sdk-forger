@@ -1,0 +1,10 @@
+[package]
+name = "sdkforge-ir"
+description = "Intermediate model of an API / SDK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

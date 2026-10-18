@@ -24,6 +24,8 @@ pub struct GenerateRequest {
     pub token_budget: u64,
     /// Verify in a scratch directory and ask the host before writing to `out`.
     pub require_approval: bool,
+    /// Reuse the model's earlier output for resources whose prompt has not changed.
+    pub use_cache: bool,
     /// After a verified run: add README/metadata/CI and package the result. None skips delivery.
     pub deliver: Option<Delivery>,
 }
@@ -130,13 +132,9 @@ fn generate_one(
         request_files(&mut claude, &core_prompt(api, &plan, instructions))
             .map_err(|e| e.to_string())?,
     );
-    for r in &api.resources {
-        log.info(format!("generating {}...", r.name));
-        merge(
-            &mut files,
-            request_files(&mut claude, &chunk_prompt(api, &plan, r, instructions))
-                .map_err(|e| e.to_string())?,
-        );
+    let chunks = generate_resources(api, &plan, req, instructions, log, &mut claude)?;
+    for chunk in chunks {
+        merge(&mut files, chunk);
     }
     if files.is_empty() {
         return Err("the model returned no files".into());
@@ -218,5 +216,151 @@ fn generate_one(
         ))
         }
         Err(e) => Err(e.to_string()),
+    }
+}
+
+type Chunk = std::result::Result<Vec<GeneratedFile>, String>;
+
+/// How many resources are requested from the model at once.
+const PARALLEL_RESOURCES: usize = 4;
+
+/// Stable 64-bit FNV-1a, so cache keys survive compiler upgrades.
+fn fnv(parts: &[&str]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for p in parts {
+        for b in p.bytes().chain(std::iter::once(0xff)) {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    h
+}
+
+fn cache_path(prompt: &str, model: &str) -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".cache")))?;
+    Some(
+        base.join("sdkforge")
+            .join(format!("{:016x}.json", fnv(&[prompt, model]))),
+    )
+}
+
+fn cache_read(path: &Path) -> Option<Vec<GeneratedFile>> {
+    let pairs: Vec<(String, String)> = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    Some(
+        pairs
+            .into_iter()
+            .map(|(path, content)| GeneratedFile { path, content })
+            .collect(),
+    )
+}
+
+fn cache_write(path: &Path, files: &[GeneratedFile]) {
+    let pairs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|f| (f.path.as_str(), f.content.as_str()))
+        .collect();
+    if let (Some(dir), Ok(json)) = (path.parent(), serde_json::to_vec(&pairs)) {
+        std::fs::create_dir_all(dir).ok();
+        std::fs::write(path, json).ok();
+    }
+}
+
+/// One model call per resource, up to [`PARALLEL_RESOURCES`] at a time, in resource order.
+/// Unchanged resources come from the cache. Tokens spent are added to `claude`.
+fn generate_resources(
+    api: &Api,
+    plan: &sdkforge_planner::SdkPlan,
+    req: &GenerateRequest,
+    instructions: &str,
+    log: &Log,
+    claude: &mut Claude,
+) -> std::result::Result<Vec<Vec<GeneratedFile>>, String> {
+    use std::sync::Mutex;
+    let next = Mutex::new(0usize);
+    let results: Mutex<Vec<Option<Chunk>>> =
+        Mutex::new((0..api.resources.len()).map(|_| None).collect());
+    let spent = std::sync::atomic::AtomicU64::new(0);
+    let workers = PARALLEL_RESOURCES.min(api.resources.len().max(1));
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let i = {
+                    let mut n = next.lock().unwrap();
+                    let i = *n;
+                    *n += 1;
+                    i
+                };
+                let Some(r) = api.resources.get(i) else {
+                    break;
+                };
+                let prompt = chunk_prompt(api, plan, r, instructions);
+                let model = req.model.clone().unwrap_or_default();
+                let cache = req.use_cache.then(|| cache_path(&prompt, &model)).flatten();
+                let outcome = match cache.as_deref().and_then(cache_read) {
+                    Some(files) => {
+                        log.info(format!("{}: unchanged, reusing earlier output", r.name));
+                        Ok(files)
+                    }
+                    None => {
+                        log.info(format!("generating {}...", r.name));
+                        Claude::from_env(req.model.clone())
+                            .map_err(|e| e.to_string())
+                            .and_then(|mut c| {
+                                let files =
+                                    request_files(&mut c, &prompt).map_err(|e| e.to_string());
+                                spent
+                                    .fetch_add(c.tokens_used, std::sync::atomic::Ordering::Relaxed);
+                                files
+                            })
+                            .inspect(|files| {
+                                if let Some(p) = &cache {
+                                    cache_write(p, files);
+                                }
+                            })
+                    }
+                };
+                results.lock().unwrap()[i] = Some(outcome);
+            });
+        }
+    });
+    claude.tokens_used += spent.into_inner();
+    results
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|| Err("a resource was not generated".into())))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_key_changes_with_prompt_and_model() {
+        assert_eq!(fnv(&["a", "b"]), fnv(&["a", "b"]));
+        assert_ne!(fnv(&["a", "b"]), fnv(&["a", "c"]));
+        assert_ne!(fnv(&["ab", ""]), fnv(&["a", "b"]));
+    }
+
+    #[test]
+    fn cache_round_trips_files() {
+        let path = std::env::temp_dir()
+            .join(format!("sdkforge-cache-{}", std::process::id()))
+            .join("k.json");
+        let files = vec![GeneratedFile {
+            path: "a/b.py".into(),
+            content: "x = 1\n".into(),
+        }];
+        cache_write(&path, &files);
+        let back = cache_read(&path).unwrap();
+        assert_eq!(
+            (back[0].path.as_str(), back[0].content.as_str()),
+            ("a/b.py", "x = 1\n")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+        assert!(cache_read(&path).is_none());
     }
 }

@@ -50,6 +50,9 @@ enum Command {
         /// Verify in a scratch directory and ask before writing to the output directory
         #[arg(long)]
         approve: bool,
+        /// Regenerate every resource instead of reusing earlier model output
+        #[arg(long)]
+        no_cache: bool,
         #[arg(long)]
         model: Option<String>,
         #[arg(long, default_value_t = 5)]
@@ -182,6 +185,7 @@ fn main() {
             deliver,
             format,
             approve,
+            no_cache,
             model,
             max_attempts,
             token_budget,
@@ -203,6 +207,7 @@ fn main() {
                 token_budget,
                 deliver: package.map(|package| Delivery { format, package }),
                 require_approval: approve,
+                use_cache: !no_cache,
             };
             let results = sdkforge_engine::generate(&host, &req).unwrap_or_else(|e| die(&e.0));
             let mut failed = false;

@@ -105,6 +105,7 @@ impl Session {
                         max_attempts: 5,
                         token_budget: 500_000,
                         deliver: None,
+                        use_cache: true,
                         require_approval: false,
                     };
                     match sdkforge_engine::generate(h, &req) {

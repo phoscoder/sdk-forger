@@ -299,8 +299,8 @@ mod tests {
 
     #[test]
     fn refuses_default_branch_push() {
-        assert!(push(Path::new("."), "main", "main").is_err());
-        assert!(push(Path::new("."), "develop", "develop").is_err());
+        assert!(push(Path::new("."), "origin", "main", "main").is_err());
+        assert!(push(Path::new("."), "origin", "develop", "develop").is_err());
     }
 
     #[test]

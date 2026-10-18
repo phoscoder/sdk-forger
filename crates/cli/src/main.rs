@@ -41,6 +41,9 @@ enum Command {
         /// Run the language formatter in the sandbox during delivery
         #[arg(long)]
         format: bool,
+        /// Verify in a scratch directory and ask before writing to the output directory
+        #[arg(long)]
+        approve: bool,
         #[arg(long)]
         model: Option<String>,
         #[arg(long, default_value_t = 5)]
@@ -96,6 +99,9 @@ enum Command {
         /// Scenario ids whose traffic differs from the original on purpose (comma-separated)
         #[arg(long, value_delimiter = ',')]
         accept_diff: Vec<String>,
+        /// Verify in a scratch directory and ask before writing to the output directory
+        #[arg(long)]
+        approve: bool,
     },
 }
 
@@ -118,6 +124,15 @@ impl Host for Terminal {
             Level::Info => println!("{tag}{}", e.message),
             Level::Warn | Level::Detail => eprintln!("{tag}{}", e.message),
         }
+    }
+
+    fn approve_files(&self, listing: &str) -> bool {
+        println!("\n{listing}");
+        print!("Write these files? [y/N]: ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line).ok();
+        matches!(line.trim(), "y" | "Y" | "yes")
     }
 
     fn approve(&self, diff: &str) -> Verdict {
@@ -145,6 +160,7 @@ fn main() {
             dry_run,
             deliver,
             format,
+            approve,
             model,
             max_attempts,
             token_budget,
@@ -165,6 +181,7 @@ fn main() {
                 max_attempts,
                 token_budget,
                 deliver: package.map(|package| Delivery { format, package }),
+                require_approval: approve,
             };
             let results = sdkforge_engine::generate(&host, &req).unwrap_or_else(|e| die(&e.0));
             let mut failed = false;
@@ -217,6 +234,7 @@ fn main() {
             token_budget,
             no_parity,
             accept_diff,
+            approve,
         } => {
             let req = PortRequest {
                 repo,
@@ -229,6 +247,7 @@ fn main() {
                 token_budget,
                 parity: !no_parity,
                 accept: accept_diff,
+                require_approval: approve,
             };
             println!(
                 "{}",

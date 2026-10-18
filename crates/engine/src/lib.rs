@@ -10,11 +10,12 @@ mod maintain;
 mod port;
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
 
 use sdkforge_generate::GeneratedFile;
+use sdkforge_verify::SANDBOX_ARTIFACTS;
 
 pub use deliver::{deliver, DeliverRequest, Package};
 pub use generate::{generate, Delivery, GenerateRequest, LangResult};
@@ -86,6 +87,10 @@ pub trait Host: Sync {
     fn event(&self, event: Event);
     /// Show a verified diff and get the user's decision.
     fn approve(&self, diff: &str) -> Verdict;
+    /// Ask before verified files are written to their destination. `listing` names the files.
+    fn approve_files(&self, listing: &str) -> bool {
+        self.approve(listing) == Verdict::Approve
+    }
 }
 
 /// Scoped logging helper used by the pipelines.
@@ -177,6 +182,88 @@ impl Host for ChannelHost {
     }
 }
 
+/// A scratch directory that is removed when dropped. Pipelines verify here when the user wants to
+/// approve files before anything reaches the real output directory.
+pub(crate) struct Staging(PathBuf);
+
+impl Staging {
+    pub fn new(tag: &str) -> Result<Self> {
+        let dir = std::env::temp_dir().join(format!(
+            "sdkforge-stage-{}-{}",
+            std::process::id(),
+            tag.replace(['/', '\\'], "_")
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).ctx()?;
+        Ok(Staging(dir))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+fn skipped(name: &str) -> bool {
+    name == ".git" || SANDBOX_ARTIFACTS.contains(&name)
+}
+
+/// Relative paths of the files under `dir`, sorted, without sandbox artifacts.
+pub(crate) fn list_files(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if skipped(&e.file_name().to_string_lossy()) {
+                continue;
+            }
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(rel) = p.strip_prefix(dir) {
+                out.push(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Copy the files `list_files` reports from one directory into another.
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    for rel in list_files(from) {
+        let dest = to.join(&rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).ctx()?;
+        }
+        std::fs::copy(from.join(&rel), dest).ctx()?;
+    }
+    Ok(())
+}
+
+/// Ask the host whether the verified files in `stage` may be written to `dest`.
+pub(crate) fn approve_and_copy(host: &dyn Host, stage: &Path, dest: &Path) -> Result<()> {
+    let files = list_files(stage);
+    let listing = format!(
+        "Write {} file(s) to {}:\n{}",
+        files.len(),
+        dest.display(),
+        files.join("\n")
+    );
+    if !host.approve_files(&listing) {
+        return Err("rejected; nothing written".into());
+    }
+    copy_tree(stage, dest)
+}
+
 pub(crate) fn write_files(root: &Path, files: &[GeneratedFile]) -> Result<()> {
     for f in files {
         let p = root.join(&f.path);
@@ -223,6 +310,36 @@ mod tests {
         let (host, _events, approvals) = ChannelHost::new();
         drop(approvals);
         assert_eq!(host.approve("d"), Verdict::Reject);
+    }
+
+    struct Answer(bool);
+    impl Host for Answer {
+        fn event(&self, _: Event) {}
+        fn approve(&self, _: &str) -> Verdict {
+            if self.0 {
+                Verdict::Approve
+            } else {
+                Verdict::Reject
+            }
+        }
+    }
+
+    #[test]
+    fn approval_gates_the_copy_and_skips_sandbox_artifacts() {
+        let stage = Staging::new("test-approval").unwrap();
+        std::fs::create_dir_all(stage.path().join("pkg")).unwrap();
+        std::fs::create_dir_all(stage.path().join(".deps")).unwrap();
+        std::fs::write(stage.path().join("pkg/a.py"), "a").unwrap();
+        std::fs::write(stage.path().join(".deps/x"), "x").unwrap();
+        let dest = std::env::temp_dir().join(format!("sdkforge-dest-{}", std::process::id()));
+
+        assert!(approve_and_copy(&Answer(false), stage.path(), &dest).is_err());
+        assert!(!dest.exists());
+
+        approve_and_copy(&Answer(true), stage.path(), &dest).unwrap();
+        assert!(dest.join("pkg/a.py").exists());
+        assert!(!dest.join(".deps").exists());
+        std::fs::remove_dir_all(&dest).ok();
     }
 
     #[test]

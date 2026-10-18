@@ -15,7 +15,7 @@ use sdkforge_verify::{
     RetryPolicy, VerifyError,
 };
 
-use crate::{merge, write_files, Ctx, EngineError, Host, Log, Result};
+use crate::{approve_and_copy, merge, write_files, Ctx, EngineError, Host, Log, Result, Staging};
 
 pub struct PortRequest {
     /// Source SDK repo URL or local path.
@@ -29,6 +29,8 @@ pub struct PortRequest {
     pub max_attempts: u32,
     pub token_budget: u64,
     pub parity: bool,
+    /// Verify in a scratch directory and ask the host before writing to `out`.
+    pub require_approval: bool,
     /// Scenario ids whose traffic differences are known and accepted.
     pub accept: Vec<String>,
 }
@@ -220,6 +222,12 @@ pub fn port(host: &dyn Host, a: &PortRequest) -> Result<String> {
         ))
     })?;
     let tc = for_target(to.name()).ok_or("no sandbox recipe for that target")?;
+    let stage = if a.require_approval {
+        Some(Staging::new("port")?)
+    } else {
+        None
+    };
+    let out: &Path = stage.as_ref().map_or(a.out.as_path(), Staging::path);
     let work = std::env::temp_dir().join(format!("sdkforge-port-{}", std::process::id()));
     log.info("cloning source...");
     repo::clone(&a.repo, &work).ctx()?;
@@ -334,7 +342,7 @@ pub fn port(host: &dyn Host, a: &PortRequest) -> Result<String> {
             )?,
         );
     }
-    write_files(&a.out, &files)?;
+    write_files(out, &files)?;
 
     let files = RefCell::new(files);
     let baseline = if a.parity {
@@ -345,7 +353,7 @@ pub fn port(host: &dyn Host, a: &PortRequest) -> Result<String> {
             tests: &tests,
             from,
             target,
-            out: &a.out,
+            out,
         };
         setup_parity(&log, &claude, &input, &files)?
     } else {
@@ -377,7 +385,7 @@ pub fn port(host: &dyn Host, a: &PortRequest) -> Result<String> {
                 });
             }
             log.info("verifying in sandbox...");
-            let tests_run = run_in_sandbox(&a.out, &tc)?;
+            let tests_run = run_in_sandbox(out, &tc)?;
             let Some(base) = &baseline else {
                 return Ok(tests_run);
             };
@@ -385,7 +393,7 @@ pub fn port(host: &dyn Host, a: &PortRequest) -> Result<String> {
                 return Ok(tests_run);
             }
             log.info("checking traffic parity against the original...");
-            let (cmd_outcome, actual) = record_traffic(&a.out, &tc, driver(target).1)?;
+            let (cmd_outcome, actual) = record_traffic(out, &tc, driver(target).1)?;
             if !cmd_outcome.success || actual.requests.is_empty() {
                 let output = format!("The parity driver `{}` failed to run or recorded nothing. Fix the driver or the port:\n{}", driver(target).0, cmd_outcome.output);
                 return Ok(Outcome {
@@ -420,15 +428,15 @@ Fix the PORT so its requests match the original's exactly (the original is corre
                 .complete(SYSTEM, &fix_prompt(&plan, &files.borrow(), err))
                 .map_err(|e| VerifyError::Sandbox(e.to_string()))?;
             let fixed = parse_files(&text);
-            write_files(&a.out, &fixed).map_err(|e| VerifyError::Sandbox(e.to_string()))?;
+            write_files(out, &fixed).map_err(|e| VerifyError::Sandbox(e.to_string()))?;
             merge(&mut files.borrow_mut(), fixed);
             Ok(())
         },
         || claude.borrow().tokens_used,
     );
     // Verification scaffolding is never part of the SDK, whether or not the run succeeded.
-    std::fs::remove_dir_all(a.out.join("parity")).ok();
-    let driver_path = a.out.join(driver(target).0);
+    std::fs::remove_dir_all(out.join("parity")).ok();
+    let driver_path = out.join(driver(target).0);
     if driver_path.exists() {
         std::fs::remove_file(&driver_path).ok();
         if let Some(dir) = driver_path.parent() {
@@ -452,7 +460,10 @@ Fix the PORT so its requests match the original's exactly (the original is corre
                     "accepted differences from the original:\n{}",
                     notes.join("\n")
                 ));
-                write_notes(&a.out, &notes);
+                write_notes(out, &notes);
+            }
+            if stage.is_some() {
+                approve_and_copy(host, out, &a.out)?;
             }
         }
         Ok((o, n)) => {
@@ -463,6 +474,9 @@ Fix the PORT so its requests match the original's exactly (the original is corre
                     "if these differences are intended, re-run with --accept-diff {}",
                     ids.join(",")
                 ));
+            }
+            if stage.is_some() {
+                crate::copy_tree(out, &a.out)?;
             }
             return Err(EngineError(format!(
                 "not verified after {n} attempt(s); flagged for review, output left in {}",

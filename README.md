@@ -17,8 +17,11 @@ Languages: Python, Node, PHP, Rust and Go. All five can be a Generate or Port ta
 ## Requirements
 
 - Rust (to build), Docker (every build and test runs in a container), `git`.
-- `ANTHROPIC_API_KEY` in your environment. Keys are never written to disk and never passed into a sandbox.
-- `gh` (GitHub CLI), only for `maintain --push`.
+- An Anthropic API key: either `ANTHROPIC_API_KEY` in your environment, or run `sdkforge-cli auth` once to keep it
+  in the system keychain (the environment variable wins). Keys are never written to disk by SDK Forge and never
+  passed into a sandbox.
+- `gh` (GitHub CLI) or `glab` (GitLab CLI), only for `maintain --push`. Without write access, Maintain pushes to
+  your fork on GitHub.
 
 ```
 cargo build --release          # binary: target/release/sdkforge-cli
@@ -40,6 +43,12 @@ sdkforge-cli maintain https://github.com/acme/sdk -r "add retry on 503" --push  
 sdkforge-cli port https://github.com/acme/sdk-node --to rust -o port-out
 sdkforge-cli port ./sdk-go --to php --accept-diff send_standard_happy_path       # accept a known behaviour difference
 ```
+
+Delivery and review flags for Generate: `--deliver zip|repo` adds a README, package metadata and CI config where
+the generated code has none, then zips the SDK or makes a new git repository with a first commit; `--format` runs the
+language formatter in the sandbox first; `--approve` (also on Port) verifies in a scratch directory and asks before
+anything is written to the output directory; `--no-cache` regenerates every resource instead of reusing earlier
+model output (resources are generated four at a time, and unchanged ones come from `~/.cache/sdkforge`).
 
 Useful flags: `--max-attempts` and `--token-budget` cap the fix loop; `--model` picks the Claude model;
 `--no-parity` skips the traffic check in Port; `--from` sets the Port source language when it can't be detected.
@@ -178,12 +187,18 @@ crates/
   verify/    Docker sandbox, toolchains per language, fix loop, traffic recording
   mock/      recording server and traffic comparison
   repo/      git operations and forge providers
-  cli/       sdkforge-cli
-  app/       GPUI desktop app (placeholder)
+  engine/    headless Generate, Maintain and Port pipelines, delivery, and the Host trait both front ends use
+  cli/       sdkforge-cli, a thin terminal Host over the engine
+  app/       GPUI desktop app (gpui-kit and gpui-omarchy), driving the engine through channels
 examples/    sample specs
 ```
 
 ## Status
 
-Generate, Maintain and Port work end to end from the command line. The desktop app and several delivery
-features are not built yet; see [WHATS_LEFT.md](WHATS_LEFT.md).
+Generate, Maintain and Port work end to end from the command line, and the desktop app has its five screens
+(Project, Instructions, Run, Diff review, Output). The app was built without a real model run, so treat it as
+untested against a live API; see [WHATS_LEFT.md](WHATS_LEFT.md).
+
+```
+cargo run -p sdkforge-app      # the desktop app (needs the GPUI system libraries)
+```

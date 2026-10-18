@@ -1,0 +1,17 @@
+[package]
+name = "sdkforge-cli"
+description = "sdkforge command-line binary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+sdkforge-ir.workspace = true
+sdkforge-ingest.workspace = true
+sdkforge-planner.workspace = true
+sdkforge-generate.workspace = true
+sdkforge-verify.workspace = true
+sdkforge-mock.workspace = true
+sdkforge-repo.workspace = true
+serde_json.workspace = true

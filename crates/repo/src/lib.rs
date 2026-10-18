@@ -12,6 +12,12 @@ pub enum RepoError {
 }
 
 pub trait ForgeProvider {
+    /// The remote to push the branch to. Forges that can fork when the user has no write access
+    /// do so here and return the fork's remote name; the default is `origin`.
+    fn prepare_push(&self, _dir: &Path) -> Result<String, RepoError> {
+        Ok("origin".into())
+    }
+
     fn open_pull_request(
         &self,
         dir: &Path,
@@ -21,10 +27,54 @@ pub trait ForgeProvider {
     ) -> Result<String, RepoError>;
 }
 
+/// Run a forge CLI; stdout on success, stderr as the error otherwise.
+fn forge_cli(program: &str, dir: &Path, args: &[&str]) -> Result<String, RepoError> {
+    let out = Command::new(program)
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .map_err(|e| RepoError::Forge(format!("cannot run {program}: {e}")))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(RepoError::Forge(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// Name of the extra remote that holds the user's fork.
+pub const FORK_REMOTE: &str = "fork";
+
 /// GitHub through the `gh` CLI, which owns the user's credentials; tokens never pass through us.
 pub struct GitHub;
 
 impl ForgeProvider for GitHub {
+    fn prepare_push(&self, dir: &Path) -> Result<String, RepoError> {
+        let perm = forge_cli(
+            "gh",
+            dir,
+            &[
+                "repo",
+                "view",
+                "--json",
+                "viewerPermission",
+                "-q",
+                ".viewerPermission",
+            ],
+        )?;
+        if matches!(perm.as_str(), "ADMIN" | "MAINTAIN" | "WRITE") {
+            return Ok("origin".into());
+        }
+        // No write access: push to the user's own fork and open the PR from there.
+        forge_cli(
+            "gh",
+            dir,
+            &["repo", "fork", "--remote", "--remote-name", FORK_REMOTE],
+        )?;
+        Ok(FORK_REMOTE.into())
+    }
+
     fn open_pull_request(
         &self,
         dir: &Path,
@@ -32,20 +82,58 @@ impl ForgeProvider for GitHub {
         title: &str,
         body: &str,
     ) -> Result<String, RepoError> {
-        let out = Command::new("gh")
-            .current_dir(dir)
-            .args([
-                "pr", "create", "--head", branch, "--title", title, "--body", body,
-            ])
-            .output()
-            .map_err(|e| RepoError::Forge(format!("cannot run gh: {e}")))?;
-        if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        let forked = run(Some(dir), &["remote", "get-url", FORK_REMOTE], None).is_ok();
+        let head = if forked {
+            let login = forge_cli("gh", dir, &["api", "user", "-q", ".login"])?;
+            format!("{login}:{branch}")
         } else {
-            Err(RepoError::Forge(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ))
-        }
+            branch.to_string()
+        };
+        forge_cli(
+            "gh",
+            dir,
+            &[
+                "pr", "create", "--head", &head, "--title", title, "--body", body,
+            ],
+        )
+    }
+}
+
+/// GitLab through the `glab` CLI.
+pub struct GitLab;
+
+impl ForgeProvider for GitLab {
+    fn open_pull_request(
+        &self,
+        dir: &Path,
+        branch: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<String, RepoError> {
+        forge_cli(
+            "glab",
+            dir,
+            &[
+                "mr",
+                "create",
+                "--source-branch",
+                branch,
+                "--title",
+                title,
+                "--description",
+                body,
+                "--yes",
+            ],
+        )
+    }
+}
+
+/// Choose a forge from the repo URL; GitHub is the default.
+pub fn forge_for(url: &str) -> Box<dyn ForgeProvider> {
+    if url.contains("gitlab") {
+        Box::new(GitLab)
+    } else {
+        Box::new(GitHub)
     }
 }
 
@@ -146,14 +234,14 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<(), RepoError> {
 }
 
 /// Refuses to push the repo's default branch; Maintain mode always works on its own branch.
-pub fn push(dir: &Path, branch: &str, default_branch: &str) -> Result<(), RepoError> {
+pub fn push(dir: &Path, remote: &str, branch: &str, default_branch: &str) -> Result<(), RepoError> {
     if branch == default_branch || branch == "main" || branch == "master" {
         return Err(RepoError::Git {
             cmd: "push".into(),
             msg: format!("refusing to push default branch `{branch}`"),
         });
     }
-    run(Some(dir), &["push", "-u", "origin", branch], None).map(|_| ())
+    run(Some(dir), &["push", "-u", remote, branch], None).map(|_| ())
 }
 
 /// Pick the files most relevant to a request: keyword hits in path (weighted) and content,

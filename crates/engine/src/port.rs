@@ -15,9 +15,10 @@ use sdkforge_verify::{
     RetryPolicy, VerifyError,
 };
 
-use crate::{die, merge, write_files};
+use crate::{merge, write_files, Ctx, EngineError, Host, Log, Result};
 
-pub struct Args {
+pub struct PortRequest {
+    /// Source SDK repo URL or local path.
     pub repo: String,
     pub to: String,
     /// Source language; detected from the repo when None.
@@ -59,34 +60,36 @@ fn within_budget(
     (kept, skipped)
 }
 
-fn complete(claude: &RefCell<Claude>, system: &str, prompt: &str) -> String {
-    claude
-        .borrow_mut()
-        .complete(system, prompt)
-        .unwrap_or_else(|e| die(&e.to_string()))
+fn complete(claude: &RefCell<Claude>, system: &str, prompt: &str) -> Result<String> {
+    claude.borrow_mut().complete(system, prompt).ctx()
+}
+
+/// Everything the parity setup reads or writes.
+struct ParityInput<'a> {
+    src: &'a Source<'a>,
+    plan_text: &'a str,
+    work: &'a Path,
+    tests: &'a [(String, String)],
+    from: Lang,
+    target: &'a str,
+    out: &'a Path,
 }
 
 /// Record the original SDK's traffic for shared scenarios and add a driver for the port.
-/// Returns the baseline recording, or None (with a printed reason) if parity cannot be set up.
-#[allow(clippy::too_many_arguments)]
+/// Returns the baseline recording, or None (with a logged reason) if parity cannot be set up.
 fn setup_parity(
+    log: &Log,
     claude: &RefCell<Claude>,
-    src: &Source,
-    plan_text: &str,
-    work: &Path,
-    tests: &[(String, String)],
-    sources: &[(String, String)],
+    p: &ParityInput,
     files: &RefCell<Vec<GeneratedFile>>,
-    from: Lang,
-    target: &str,
-    out: &Path,
-) -> Option<Recording> {
+) -> Result<Option<Recording>> {
+    let (src, work, tests, from) = (p.src, p.work, p.tests, p.from);
     let skip = |why: &str| {
-        println!("parity check skipped: {why}");
-        None
+        log.warn(format!("parity check skipped: {why}"));
+        Ok(None)
     };
-    println!("designing traffic scenarios...");
-    let reply = ask_files(claude, &scenarios_prompt(src, tests));
+    log.info("designing traffic scenarios...");
+    let reply = ask_files(log, claude, &scenarios_prompt(src, tests))?;
     let Some(scen) = reply
         .into_iter()
         .find(|f| f.path == "parity/scenarios.json")
@@ -112,7 +115,7 @@ fn setup_parity(
         Err(e) => return skip(&e.to_string()),
     }
     let (src_path, src_cmd) = driver(from.name());
-    write_files(work, std::slice::from_ref(&scen));
+    write_files(work, std::slice::from_ref(&scen))?;
     let mut baseline = None;
     let mut driver_file = GeneratedFile {
         path: src_path.into(),
@@ -125,15 +128,17 @@ fn setup_parity(
         } else {
             driver_fix_prompt(src_path, &driver_file.content, &last_output)
         };
-        let Some(f) = ask_files(claude, &prompt)
+        let Some(f) = ask_files(log, claude, &prompt)?
             .into_iter()
             .find(|f| f.path == src_path)
         else {
             continue;
         };
         driver_file = f;
-        write_files(work, std::slice::from_ref(&driver_file));
-        println!("recording the original SDK's traffic (attempt {attempt})...");
+        write_files(work, std::slice::from_ref(&driver_file))?;
+        log.info(format!(
+            "recording the original SDK's traffic (attempt {attempt})..."
+        ));
         match record_traffic(work, &tc, src_cmd) {
             Ok((o, rec)) if o.success && !rec.requests.is_empty() => {
                 baseline = Some(rec);
@@ -149,22 +154,19 @@ fn setup_parity(
             Err(e) => return skip(&e.to_string()),
         }
     }
-    let baseline = match baseline {
-        Some(b) => b,
-        None => {
-            return skip(&format!(
-                "the original's driver never ran cleanly:\n{last_output}"
-            ))
-        }
+    let Some(baseline) = baseline else {
+        return skip(&format!(
+            "the original's driver never ran cleanly:\n{last_output}"
+        ));
     };
-    println!(
+    log.info(format!(
         "baseline: {} requests across {} scenarios",
         baseline.requests.len(),
         baseline.outcomes.len()
-    );
+    ));
 
     // 2. Driver for the port, written against the plan and the ported code.
-    let (dst_path, _) = driver(target);
+    let (dst_path, _) = driver(p.target);
     let code: Vec<GeneratedFile> = files
         .borrow()
         .iter()
@@ -172,65 +174,66 @@ fn setup_parity(
         .cloned()
         .collect();
     let tgt = ask_files(
+        log,
         claude,
         &driver_prompt(
             src,
-            target,
+            p.target,
             dst_path,
             &scen.content,
-            Some(plan_text),
+            Some(p.plan_text),
             &code,
             tests,
         ),
-    );
+    )?;
     let Some(df) = tgt.into_iter().find(|f| f.path == dst_path) else {
         return skip("the model returned no driver for the port");
     };
     merge(&mut files.borrow_mut(), vec![scen, df]);
-    write_files(out, &files.borrow());
-    let _ = sources;
-    Some(baseline)
+    write_files(p.out, &files.borrow())?;
+    Ok(Some(baseline))
 }
 
 /// Ask for files; if the reply has none (format slip or truncation), say what came back and retry once.
-fn ask_files(claude: &RefCell<Claude>, prompt: &str) -> Vec<GeneratedFile> {
-    let reply = complete(claude, SYSTEM, prompt);
+fn ask_files(log: &Log, claude: &RefCell<Claude>, prompt: &str) -> Result<Vec<GeneratedFile>> {
+    let reply = complete(claude, SYSTEM, prompt)?;
     let files = parse_files(&reply);
     if !files.is_empty() {
-        return files;
+        return Ok(files);
     }
     let head: String = reply.chars().take(200).collect();
-    println!(
+    log.warn(format!(
         "the reply had no file blocks ({} chars, starts {head:?}); retrying",
         reply.len()
-    );
+    ));
     let retry = format!("{prompt}\n\nYour previous reply contained no `=== FILE: path ===` ... `=== END ===` blocks. Reply with ONLY files in exactly that format.");
-    parse_files(&complete(claude, SYSTEM, &retry))
+    Ok(parse_files(&complete(claude, SYSTEM, &retry)?))
 }
 
-pub fn run(a: Args) {
-    let to = Lang::parse(&a.to).unwrap_or_else(|| {
-        die(&format!(
+/// Returns a summary line when the ported tests pass.
+pub fn port(host: &dyn Host, a: &PortRequest) -> Result<String> {
+    let log = Log::new(host, "");
+    let to = Lang::parse(&a.to).ok_or_else(|| {
+        EngineError(format!(
             "unsupported target `{}`; use python, node, php, rust or go",
             a.to
         ))
-    });
-    let tc = for_target(to.name()).unwrap_or_else(|| die("no sandbox recipe for that target"));
+    })?;
+    let tc = for_target(to.name()).ok_or("no sandbox recipe for that target")?;
     let work = std::env::temp_dir().join(format!("sdkforge-port-{}", std::process::id()));
-    println!("cloning source...");
-    repo::clone(&a.repo, &work).unwrap_or_else(|e| die(&e.to_string()));
-    let all = repo::tracked_files(&work).unwrap_or_else(|e| die(&e.to_string()));
+    log.info("cloning source...");
+    repo::clone(&a.repo, &work).ctx()?;
+    let all = repo::tracked_files(&work).ctx()?;
 
     let from = match &a.from {
-        Some(name) => Lang::parse(name).unwrap_or_else(|| {
-            die(&format!(
+        Some(name) => Lang::parse(name).ok_or_else(|| {
+            EngineError(format!(
                 "unknown source language `{name}`; use python, node, php, rust or go"
             ))
-        }),
-        None => detect_lang(&all)
-            .unwrap_or_else(|| die("could not detect the source language; pass --from")),
+        })?,
+        None => detect_lang(&all).ok_or("could not detect the source language; pass --from")?,
     };
-    println!("source language: {}", from.display());
+    log.info(format!("source language: {}", from.display()));
     let test_paths: Vec<String> = all
         .iter()
         .filter(|p| from.is_code_file(p) && from.is_test_file(p))
@@ -242,7 +245,10 @@ pub fn run(a: Args) {
         .cloned()
         .collect();
     if src_paths.is_empty() {
-        die(&format!("no {} source files found", from.display()));
+        return Err(EngineError(format!(
+            "no {} source files found",
+            from.display()
+        )));
     }
 
     let (sources, skipped_src) = within_budget(&work, src_paths, SOURCE_BUDGET);
@@ -254,23 +260,25 @@ pub fn run(a: Args) {
         }
     }
     for s in skipped_src.iter().chain(&skipped_tests) {
-        println!("note: skipped {s} (over the size budget)");
+        log.warn(format!("skipped {s} (over the size budget)"));
     }
     if tests.is_empty() {
-        die("the source repo has no tests; Port needs them as the definition of done");
+        return Err(
+            "the source repo has no tests; Port needs them as the definition of done".into(),
+        );
     }
 
     let outlines: Vec<FileOutline> = sources
         .iter()
-        .map(|(p, c)| outline(from, p, c).unwrap_or_else(|e| die(&e.to_string())))
-        .collect();
+        .map(|(p, c)| outline(from, p, c).ctx())
+        .collect::<Result<_>>()?;
     let names = public_names(&outlines);
-    println!(
+    log.info(format!(
         "analyzed {} source files ({} public symbols), {} test files",
         sources.len(),
         names.len(),
         tests.len()
-    );
+    ));
 
     let readme: String = ["README.md", "README.rst", "README"]
         .iter()
@@ -299,15 +307,15 @@ pub fn run(a: Args) {
         target,
     };
 
-    let claude = RefCell::new(Claude::from_env(a.model).unwrap_or_else(|e| die(&e.to_string())));
+    let claude = RefCell::new(Claude::from_env(a.model.clone()).ctx()?);
 
-    println!("planning the port...");
-    let plan_text = complete(&claude, PLAN_SYSTEM, &plan_prompt(&src));
+    log.info("planning the port...");
+    let plan_text = complete(&claude, PLAN_SYSTEM, &plan_prompt(&src))?;
 
-    println!("porting tests first...");
-    let ported_tests = ask_files(&claude, &tests_prompt(&src, &plan_text, &tests));
+    log.info("porting tests first...");
+    let ported_tests = ask_files(&log, &claude, &tests_prompt(&src, &plan_text, &tests))?;
     if ported_tests.is_empty() {
-        die("the model returned no ported tests");
+        return Err("the model returned no ported tests".into());
     }
 
     let mut files: Vec<GeneratedFile> = ported_tests.clone();
@@ -316,22 +324,30 @@ pub fn run(a: Args) {
             .iter()
             .any(|o| &o.path == p && !o.symbols.is_empty())
     }) {
-        println!("porting {}...", module.0);
+        log.info(format!("porting {}...", module.0));
         merge(
             &mut files,
             ask_files(
+                &log,
                 &claude,
                 &module_prompt(&src, &plan_text, &ported_tests, module),
-            ),
+            )?,
         );
     }
-    write_files(&a.out, &files);
+    write_files(&a.out, &files)?;
 
     let files = RefCell::new(files);
     let baseline = if a.parity {
-        setup_parity(
-            &claude, &src, &plan_text, &work, &tests, &sources, &files, from, target, &a.out,
-        )
+        let input = ParityInput {
+            src: &src,
+            plan_text: &plan_text,
+            work: &work,
+            tests: &tests,
+            from,
+            target,
+            out: &a.out,
+        };
+        setup_parity(&log, &claude, &input, &files)?
     } else {
         None
     };
@@ -350,7 +366,7 @@ pub fn run(a: Args) {
         || {
             let missing = surface_missing(&names, &files.borrow());
             if !missing.is_empty() {
-                println!("surface check failed");
+                log.warn("surface check failed");
                 let output = format!(
                     "These public symbols of the source SDK have no counterpart in the port:\n{}",
                     missing.join("\n")
@@ -360,7 +376,7 @@ pub fn run(a: Args) {
                     output,
                 });
             }
-            println!("verifying in sandbox...");
+            log.info("verifying in sandbox...");
             let tests_run = run_in_sandbox(&a.out, &tc)?;
             let Some(base) = &baseline else {
                 return Ok(tests_run);
@@ -368,7 +384,7 @@ pub fn run(a: Args) {
             if !tests_run.success {
                 return Ok(tests_run);
             }
-            println!("checking traffic parity against the original...");
+            log.info("checking traffic parity against the original...");
             let (cmd_outcome, actual) = record_traffic(&a.out, &tc, driver(target).1)?;
             if !cmd_outcome.success || actual.requests.is_empty() {
                 let output = format!("The parity driver `{}` failed to run or recorded nothing. Fix the driver or the port:\n{}", driver(target).0, cmd_outcome.output);
@@ -383,10 +399,10 @@ pub fn run(a: Args) {
             if problems.is_empty() {
                 return Ok(tests_run);
             }
-            println!(
+            log.warn(format!(
                 "traffic differs from the original in {} place(s)",
                 problems.len()
-            );
+            ));
             let output = format!(
                 "Traffic parity failed: for the same scripted scenarios (parity/scenarios.json) the original SDK and the port sent different HTTP traffic. \
 Fix the PORT so its requests match the original's exactly (the original is correct; do not change scenarios.json):\n{}",
@@ -398,13 +414,13 @@ Fix the PORT so its requests match the original's exactly (the original is corre
             })
         },
         |err| {
-            println!("verification failed, asking the model for a fix...");
+            log.warn("verification failed, asking the model for a fix...");
             let text = claude
                 .borrow_mut()
                 .complete(SYSTEM, &fix_prompt(&plan, &files.borrow(), err))
                 .map_err(|e| VerifyError::Sandbox(e.to_string()))?;
             let fixed = parse_files(&text);
-            write_files(&a.out, &fixed);
+            write_files(&a.out, &fixed).map_err(|e| VerifyError::Sandbox(e.to_string()))?;
             merge(&mut files.borrow_mut(), fixed);
             Ok(())
         },
@@ -426,36 +442,36 @@ Fix the PORT so its requests match the original's exactly (the original is corre
             } else {
                 "traffic parity not checked"
             };
-            println!(
+            log.info(format!(
                 "ported tests pass after {n} attempt(s), {parity}: {}",
                 a.out.display()
-            );
+            ));
             let notes = accepted_notes.borrow();
             if !notes.is_empty() {
-                println!(
+                log.info(format!(
                     "accepted differences from the original:\n{}",
                     notes.join("\n")
-                );
+                ));
                 write_notes(&a.out, &notes);
             }
         }
         Ok((o, n)) => {
-            eprintln!("{}", o.output);
+            log.detail(o.output.clone());
             let ids = scenario_ids(&o.output);
             if o.output.contains("Traffic parity failed") && !ids.is_empty() {
-                eprintln!(
+                log.warn(format!(
                     "if these differences are intended, re-run with --accept-diff {}",
                     ids.join(",")
-                );
+                ));
             }
-            die(&format!(
+            return Err(EngineError(format!(
                 "not verified after {n} attempt(s); flagged for review, output left in {}",
                 a.out.display()
-            ))
+            )));
         }
-        Err(e) => die(&e.to_string()),
+        Err(e) => return Err(EngineError(e.to_string())),
     }
-    println!("tokens used: {}", claude.borrow().tokens_used);
+    Ok(format!("tokens used: {}", claude.borrow().tokens_used))
 }
 
 /// Scenario ids named in `[id] ...` lines of a parity report.

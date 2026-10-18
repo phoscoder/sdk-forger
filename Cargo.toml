@@ -30,3 +30,4 @@ sdkforge-generate = { path = "crates/generate" }
 sdkforge-verify = { path = "crates/verify" }
 sdkforge-mock = { path = "crates/mock" }
 sdkforge-repo = { path = "crates/repo" }
+sdkforge-engine = { path = "crates/engine" }

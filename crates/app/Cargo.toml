@@ -1,0 +1,16 @@
+[package]
+name = "sdkforge-app"
+description = "GPUI desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+sdkforge-ir.workspace = true
+sdkforge-ingest.workspace = true
+sdkforge-planner.workspace = true
+sdkforge-generate.workspace = true
+sdkforge-verify.workspace = true
+sdkforge-mock.workspace = true
+sdkforge-repo.workspace = true

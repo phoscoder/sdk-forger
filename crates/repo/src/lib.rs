@@ -253,6 +253,19 @@ pub fn select_files(
     max_files: usize,
     byte_budget: usize,
 ) -> Vec<(String, String)> {
+    select_files_boosted(dir, request, files, &[], max_files, byte_budget)
+}
+
+/// Like [`select_files`], but files in `boost` (for example ones whose symbols match the request)
+/// rank above plain keyword hits, and are chosen even when their text has no keyword.
+pub fn select_files_boosted(
+    dir: &Path,
+    request: &str,
+    files: &[String],
+    boost: &[String],
+    max_files: usize,
+    byte_budget: usize,
+) -> Vec<(String, String)> {
     let words: Vec<String> = request
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| w.len() > 3)
@@ -271,6 +284,7 @@ pub fn select_files(
                         + 5 * name.contains(w.as_str()) as usize
                 })
                 .sum();
+            let score = score + 20 * boost.contains(f) as usize;
             (score > 0).then_some((score, f, text))
         })
         .collect();

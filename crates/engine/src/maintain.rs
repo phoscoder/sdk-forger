@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use sdkforge_generate::{extract_diff, patch_prompt, repro_prompt, Claude, DIFF_SYSTEM};
+use sdkforge_ingest::{detect_lang, outline};
 use sdkforge_repo as repo;
 use sdkforge_verify::{
     detect, fix_loop, run_in_sandbox, Outcome, RetryPolicy, VerifyError, SANDBOX_ARTIFACTS,
@@ -45,6 +46,48 @@ fn subject(request: &str) -> String {
     }
 }
 
+/// Files that define a symbol the request names, found with the same tree-sitter outline Port uses.
+/// Empty when the repo's language is not recognized.
+fn symbol_files(dir: &Path, files: &[String], request: &str) -> Vec<String> {
+    let Some(lang) = detect_lang(files) else {
+        return Vec::new();
+    };
+    let flat = |s: &str| {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let tokens: Vec<String> = request
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 3)
+        .map(str::to_lowercase)
+        .collect();
+    let request_flat = flat(request);
+    files
+        .iter()
+        .filter(|f| lang.is_source_file(f))
+        .take(600)
+        .filter(|f| {
+            let Some(src) = std::fs::read_to_string(dir.join(f))
+                .ok()
+                .filter(|s| s.len() < 300_000)
+            else {
+                return false;
+            };
+            let Ok(o) = outline(lang, f, &src) else {
+                return false;
+            };
+            o.symbols.iter().any(|sym| {
+                let name = flat(&sym.name);
+                (name.len() >= 5 && request_flat.contains(&name))
+                    || tokens.iter().any(|t| name.contains(t.as_str()))
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 fn ask_diff(claude: &mut Claude, prompt: &str) -> std::result::Result<String, String> {
     let reply = claude
         .complete(DIFF_SYSTEM, prompt)
@@ -80,7 +123,15 @@ pub fn maintain(host: &dyn Host, a: &MaintainRequest) -> Result<String> {
 
     let all = repo::tracked_files(&work).ctx()?;
     let mut claude = Claude::from_env(a.model.clone()).ctx()?;
-    let relevant = |work: &Path| repo::select_files(work, &a.request, &all, 8, 60_000);
+    let symbol_hits = symbol_files(&work, &all, &a.request);
+    if !symbol_hits.is_empty() {
+        log.info(format!(
+            "symbols in the request match {} file(s)",
+            symbol_hits.len()
+        ));
+    }
+    let relevant =
+        |work: &Path| repo::select_files_boosted(work, &a.request, &all, &symbol_hits, 8, 60_000);
     if relevant(&work).is_empty() {
         log.warn("no files matched the request keywords; the model will only see the file list");
     }
@@ -221,4 +272,34 @@ fn publish(
         )),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbol_match_finds_the_defining_file_even_without_keyword_text() {
+        let dir = std::env::temp_dir().join(format!("sdkforge-sym-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("pkg")).unwrap();
+        std::fs::write(
+            dir.join("pkg/billing.py"),
+            "class InvoiceClient:\n    def refund_invoice(self, id):\n        return id\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("pkg/other.py"), "def helper():\n    return 1\n").unwrap();
+        std::fs::write(dir.join("pyproject.toml"), "[project]\nname='x'\n").unwrap();
+        let files: Vec<String> = ["pkg/billing.py", "pkg/other.py", "pyproject.toml"]
+            .map(String::from)
+            .to_vec();
+        let hits = symbol_files(&dir, &files, "refundInvoice raises a KeyError");
+        assert_eq!(hits, vec!["pkg/billing.py".to_string()]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn slug_and_subject_are_short_and_safe() {
+        assert_eq!(slug("Fix: the /pets endpoint!"), "fix-the-pets-endpoint");
+        assert!(subject(&"x".repeat(200)).ends_with("..."));
+    }
 }

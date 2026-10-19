@@ -8,7 +8,8 @@ use std::time::Duration;
 use gpui_kit::base::input::{InputState, TextareaState};
 use gpui_kit::rems;
 use gpui_kit::{
-    div, prelude::*, App, Context, Entity, FontWeight, SharedString, Window, WindowOptions,
+    div, prelude::*, AnyElement, App, Context, Div, Entity, FontWeight, SharedString, Window,
+    WindowOptions,
 };
 use gpui_omarchy::*;
 use sdkforge_engine::{Level, Verdict};
@@ -64,14 +65,14 @@ impl Forge {
             screen: Screen::Project,
             mode: Mode::Generate,
             source: field(
-                "Spec file or folder (Generate), repo URL or path (Maintain, Port)",
+                "petstore.yaml, ./collection, or https://github.com/acme/sdk",
                 window,
                 cx,
             ),
-            langs: field("python, node, php, rust, go (Port: the target)", window, cx),
-            out: field("Output directory", window, cx),
-            request: field("Maintain: the error message or improvement", window, cx),
-            feedback: field("Feedback for another round", window, cx),
+            langs: field("python, node", window, cx),
+            out: field("out", window, cx),
+            request: field("paginate stops early on an empty cursor", window, cx),
+            feedback: field("e.g. keep the public method names unchanged", window, cx),
             instructions: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .rows(10)
@@ -131,73 +132,457 @@ impl Forge {
         self.session.as_ref().is_some_and(|s| s.finished.is_none())
     }
 
+    fn status(&self) -> (&'static str, Status) {
+        match self.session.as_ref() {
+            None => ("Idle", Status::Neutral),
+            Some(s) if s.pending.is_some() => ("Needs review", Status::Warning),
+            Some(s) => match &s.finished {
+                None => ("Running", Status::Warning),
+                Some(r) if r.iter().all(|(_, o)| o.ok) => ("Done", Status::Success),
+                Some(_) => ("Failed", Status::Error),
+            },
+        }
+    }
+
+    fn pill(&self, label: &str, status: Status, cx: &App) -> Div {
+        let c = status.color(cx);
+        div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .px_2p5()
+            .py_0p5()
+            .rounded_full()
+            .bg(c.opacity(0.14))
+            .text_color(c)
+            .text_size(rems(0.6875))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(div().size(rems(0.375)).rounded_full().bg(c))
+            .child(label.to_string())
+    }
+
     fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut col = div().flex().flex_col().gap_1().w(rems(11.)).p_2();
-        for screen in Screen::ALL {
-            let variant = if screen == self.screen {
-                ButtonVariant::Primary
-            } else {
-                ButtonVariant::Secondary
-            };
-            col = col.child(
-                button(screen.label(), screen.label(), variant, cx).on_click(cx.listener(
-                    move |this, _, _, cx| {
+        let t = cx.omarchy().clone();
+        let (status_label, status) = self.status();
+        let waiting = self.session.as_ref().is_some_and(|s| s.pending.is_some());
+        let mut items = div().flex().flex_col().gap_1().px_3();
+        for (i, screen) in Screen::ALL.into_iter().enumerate() {
+            let selected = screen == self.screen;
+            let badge_dot = screen == Screen::Review && waiting;
+            items = items.child(
+                div()
+                    .id(screen.label())
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .text_size(rems(0.8125))
+                    .when(selected, |d| {
+                        d.bg(t.accent.opacity(0.14))
+                            .text_color(t.accent)
+                            .font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(!selected, |d| {
+                        d.text_color(t.secondary)
+                            .hover(|h| h.bg(t.foreground.opacity(0.06)).text_color(t.foreground))
+                    })
+                    .child(
+                        div()
+                            .size(rems(1.375))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .text_size(rems(0.6875))
+                            .font_weight(FontWeight::BOLD)
+                            .when(selected, |d| d.bg(t.accent).text_color(t.on_accent))
+                            .when(!selected, |d| d.bg(t.foreground.opacity(0.08)))
+                            .child((i + 1).to_string()),
+                    )
+                    .child(div().flex_1().child(screen.label()))
+                    .when(badge_dot, |d| {
+                        d.child(div().size(rems(0.5)).rounded_full().bg(t.warning))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.screen = screen;
                         cx.notify();
-                    },
-                )),
+                    })),
             );
         }
-        col
+        div()
+            .flex()
+            .flex_col()
+            .justify_between()
+            .w(rems(15.))
+            .h_full()
+            .flex_shrink_0()
+            .py_5()
+            .bg(t.surface)
+            .border_r_1()
+            .border_color(t.border)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_6()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .px_6()
+                            .child(
+                                div()
+                                    .size(rems(2.25))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_xl()
+                                    .bg(t.accent)
+                                    .text_color(t.on_accent)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("SF"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(rems(0.9375))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child("SDK Forge"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(rems(0.6875))
+                                            .text_color(t.secondary)
+                                            .child("Verified SDKs"),
+                                    ),
+                            ),
+                    )
+                    .child(items),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .px_6()
+                    .child(
+                        div()
+                            .text_size(rems(0.6875))
+                            .text_color(t.secondary)
+                            .child("STATUS"),
+                    )
+                    .child(self.pill(status_label, status, cx)),
+            )
+    }
+
+    /// Page frame: title, one-line explanation, then the body in a centered column.
+    fn page(
+        &self,
+        title: &str,
+        subtitle: &str,
+        right: Option<AnyElement>,
+        body: impl IntoElement,
+        cx: &App,
+    ) -> Div {
+        let t = cx.omarchy();
+        div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .w_full()
+            .min_w_0()
+            .max_w(rems(58.))
+            .mx_auto()
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(rems(1.625))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(title.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.875))
+                                    .text_color(t.secondary)
+                                    .child(subtitle.to_string()),
+                            ),
+                    )
+                    .children(right),
+            )
+            .child(body)
+    }
+
+    fn card(&self, cx: &App) -> Div {
+        let t = cx.omarchy();
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_5()
+            .rounded_xl()
+            .border_1()
+            .border_color(t.border)
+            .bg(t.surface)
+    }
+
+    fn field(&self, label: &str, hint: &str, control: impl IntoElement, cx: &App) -> Div {
+        let t = cx.omarchy();
+        div()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .child(
+                div()
+                    .text_size(rems(0.75))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(label.to_string()),
+            )
+            .child(control)
+            .child(
+                div()
+                    .text_size(rems(0.6875))
+                    .text_color(t.secondary)
+                    .child(hint.to_string()),
+            )
+    }
+
+    fn empty(&self, title: &str, text: &str, cx: &App) -> Div {
+        let t = cx.omarchy();
+        self.card(cx)
+            .items_center()
+            .py_12()
+            .child(
+                div()
+                    .size(rems(3.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(t.accent.opacity(0.14))
+                    .text_color(t.accent)
+                    .text_size(rems(1.25))
+                    .child("◇"),
+            )
+            .child(
+                div()
+                    .text_size(rems(1.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title.to_string()),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.8125))
+                    .text_color(t.secondary)
+                    .child(text.to_string()),
+            )
     }
 
     fn project(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut modes = tabs("mode", cx);
+        let t = cx.omarchy().clone();
+        let blurb = |m: Mode| match m {
+            Mode::Generate => "Build a new SDK from an OpenAPI, Postman or Bruno spec.",
+            Mode::Maintain => "Fix a bug or improve an existing SDK repo with a reviewed patch.",
+            Mode::Port => "Rebuild an SDK in another language, checked against the original.",
+        };
+        let mut modes = div().flex().gap_3();
         for mode in Mode::ALL {
+            let selected = mode == self.mode;
             modes = modes.child(
-                tab(mode.label(), mode.label(), mode == self.mode, cx).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                div()
+                    .id(mode.label())
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_4()
+                    .rounded_xl()
+                    .border_1()
+                    .cursor_pointer()
+                    .when(selected, |d| {
+                        d.border_color(t.accent).bg(t.accent.opacity(0.10))
+                    })
+                    .when(!selected, |d| {
+                        d.border_color(t.border)
+                            .bg(t.surface)
+                            .hover(|h| h.border_color(t.foreground.opacity(0.35)))
+                    })
+                    .child(
+                        div()
+                            .text_size(rems(0.9375))
+                            .font_weight(FontWeight::BOLD)
+                            .when(selected, |d| d.text_color(t.accent))
+                            .child(mode.label()),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(0.75))
+                            .text_color(t.secondary)
+                            .child(blurb(mode)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.mode = mode;
                         cx.notify();
-                    },
-                )),
+                    })),
             );
         }
-        let mut p = panel("Project", cx)
-            .child(modes)
-            .child(input("source", &self.source, window, cx))
-            .child(input("langs", &self.langs, window, cx))
-            .child(input("out", &self.out, window, cx));
+        let (source_label, source_hint) = match self.mode {
+            Mode::Generate => (
+                "API description",
+                "Path to an OpenAPI file, Postman collection or Bruno folder.",
+            ),
+            _ => ("Repository", "A git URL or a local path to the SDK."),
+        };
+        let lang_label = if self.mode == Mode::Port {
+            "Target language"
+        } else {
+            "Languages"
+        };
+        let lang_hint = if self.mode == Mode::Port {
+            "One of python, node, php, rust, go."
+        } else {
+            "Comma-separated: python, node, php, rust, go. Several run in parallel."
+        };
+        let mut form = self.card(cx).child(self.field(
+            source_label,
+            source_hint,
+            input("source", &self.source, window, cx),
+            cx,
+        ));
         if self.mode == Mode::Maintain {
-            p = p.child(input("request", &self.request, window, cx));
+            form = form.child(self.field(
+                "What should change?",
+                "Paste the error message or describe the improvement.",
+                input("request", &self.request, window, cx),
+                cx,
+            ));
+        } else {
+            form = form
+                .child(self.field(
+                    lang_label,
+                    lang_hint,
+                    input("langs", &self.langs, window, cx),
+                    cx,
+                ))
+                .child(self.field(
+                    "Output folder",
+                    "Where the verified SDK is written.",
+                    input("out", &self.out, window, cx),
+                    cx,
+                ));
         }
-        p.child(
-            button("start", self.mode.label(), ButtonVariant::Primary, cx)
-                .disabled(self.running())
-                .on_click(cx.listener(|this, _, _, cx| this.start(cx))),
+        let running = self.running();
+        let go = div()
+            .id("start")
+            .flex()
+            .items_center()
+            .justify_center()
+            .px_6()
+            .py_2p5()
+            .rounded_lg()
+            .text_size(rems(0.875))
+            .font_weight(FontWeight::BOLD)
+            .when(running, |d| {
+                d.bg(t.foreground.opacity(0.10)).text_color(t.secondary)
+            })
+            .when(!running, |d| {
+                d.bg(t.accent)
+                    .text_color(t.on_accent)
+                    .cursor_pointer()
+                    .hover(|h| h.opacity(0.88))
+                    .on_click(cx.listener(|this, _, _, cx| this.start(cx)))
+            })
+            .child(if running {
+                "Working…".to_string()
+            } else {
+                format!("Start {}", self.mode.label().to_lowercase())
+            });
+        self.page(
+            "Project",
+            "Choose what to do, then point it at your input.",
+            None,
+            div()
+                .flex()
+                .flex_col()
+                .gap_5()
+                .child(modes)
+                .child(form)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(rems(0.75))
+                                .text_color(t.secondary)
+                                .child("Every build runs in a Docker sandbox before you see it."),
+                        )
+                        .child(go),
+                ),
+            cx,
         )
     }
 
     fn instructions(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        panel("Instructions", cx)
-            .child("Sent with every model request for Generate and Port.")
-            .child(textarea("instructions", &self.instructions, window, cx))
+        let body = self
+            .card(cx)
+            .child(self.field(
+                "Instructions for the model",
+                "Naming, error handling, async style, anything the SDK should follow. Secrets are redacted before sending.",
+                textarea("instructions", &self.instructions, window, cx),
+                cx,
+            ));
+        self.page(
+            "Instructions",
+            "Optional guidance sent with every request in Generate and Port.",
+            None,
+            body,
+            cx,
+        )
     }
 
     fn run(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.omarchy().clone();
+        let (label, status) = self.status();
+        let right = self.pill(label, status, cx).into_any_element();
         let Some(session) = &self.session else {
-            return panel("Run", cx).child("Nothing running. Start one from the Project screen.");
+            let body = self.empty(
+                "Nothing running yet",
+                "Start Generate, Maintain or Port from the Project screen and progress shows up here.",
+                cx,
+            );
+            return self.page("Run", "Live progress for every language.", None, body, cx);
         };
-        let mut grid = div().flex().flex_wrap().gap_3();
+        let mut grid = div().flex().flex_wrap().gap_4();
         for (scope, lane) in &session.lanes {
-            let title = if scope.is_empty() { "run" } else { scope };
+            let title = if scope.is_empty() { "Run" } else { scope };
             let mut log = div()
                 .id(SharedString::from(format!("log-{title}")))
                 .flex()
                 .flex_col()
-                .h(rems(16.))
+                .gap_0p5()
+                .h(rems(17.))
+                .p_3()
+                .rounded_lg()
                 .overflow_y_scroll()
+                .bg(t.inset)
                 .font_family(t.mono_font.clone())
                 .text_size(rems(0.6875));
             for (level, line) in lane.lines.iter().rev().take(200).rev() {
@@ -209,111 +594,201 @@ impl Forge {
                 log = log.child(div().text_color(color).child(line.clone()));
             }
             grid = grid.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .w(rems(26.))
-                    .p_2()
-                    .border_1()
-                    .border_color(t.border)
-                    .child(div().font_weight(FontWeight::BOLD).child(title.to_string()))
-                    .child(div().text_color(t.accent).child(lane.stage.clone()))
+                self.card(cx)
+                    .flex_1()
+                    .min_w(rems(24.))
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(rems(1.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(title.to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.6875))
+                                    .text_color(t.secondary)
+                                    .child(format!("{} lines", lane.lines.len())),
+                            ),
+                    )
+                    .child(div().text_size(rems(0.8125)).text_color(t.accent).child(
+                        if lane.stage.is_empty() {
+                            "starting…".to_string()
+                        } else {
+                            lane.stage.clone()
+                        },
+                    ))
                     .child(log),
             );
         }
-        let status = match &session.finished {
-            None => "running...".to_string(),
-            Some(_) => "finished, see Output".to_string(),
-        };
-        panel("Run", cx).child(status).child(grid)
+        self.page(
+            "Run",
+            "Live progress for every language.",
+            Some(right),
+            grid,
+            cx,
+        )
     }
 
     fn review(&self, cx: &mut Context<Self>, window: &Window) -> impl IntoElement {
         let t = cx.omarchy().clone();
         let Some(req) = self.session.as_ref().and_then(|s| s.pending.as_ref()) else {
-            return panel("Diff review", cx).child("No diff is waiting for approval.");
+            let body = self.empty(
+                "No diff waiting",
+                "When a patch or a set of files passes the sandbox, it appears here for your approval.",
+                cx,
+            );
+            return self.page("Diff review", "Approve what gets written.", None, body, cx);
         };
         let mut diff = div()
             .id("diff")
-            .max_h(rems(28.))
+            .flex()
+            .flex_col()
+            .max_h(rems(30.))
+            .rounded_lg()
             .overflow_y_scroll()
+            .bg(t.inset)
+            .py_2()
             .font_family(t.mono_font.clone())
             .text_size(rems(0.6875));
         for line in req.diff.lines() {
-            let color = match line.chars().next() {
-                Some('+') => t.success,
-                Some('-') => t.danger,
-                Some('@') => t.accent,
-                _ => t.foreground,
+            let (color, tint) = match line.chars().next() {
+                Some('+') => (t.success, 0.10),
+                Some('-') => (t.danger, 0.10),
+                Some('@') => (t.accent, 0.06),
+                _ => (t.foreground, 0.0),
             };
-            diff = diff.child(div().text_color(color).child(line.to_string()));
-        }
-        panel("Diff review", cx)
-            .child("Tests pass in the sandbox. Approve to commit on a new branch.")
-            .child(diff)
-            .child(input("feedback", &self.feedback, window, cx))
-            .child(
+            diff = diff.child(
                 div()
-                    .flex()
-                    .gap_2()
+                    .px_4()
+                    .bg(color.opacity(tint))
+                    .text_color(color)
+                    .child(line.to_string()),
+            );
+        }
+        let action = |id: &'static str, text: &'static str| {
+            div()
+                .id(id)
+                .px_5()
+                .py_2()
+                .rounded_lg()
+                .cursor_pointer()
+                .text_size(rems(0.8125))
+                .font_weight(FontWeight::BOLD)
+                .child(text)
+        };
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(self.card(cx).child(diff))
+            .child(
+                self.card(cx)
+                    .child(self.field(
+                        "Not quite right?",
+                        "Describe what to change and the model tries another round.",
+                        input("feedback", &self.feedback, window, cx),
+                        cx,
+                    ))
                     .child(
-                        button("approve", "Approve", ButtonVariant::Primary, cx).on_click(
-                            cx.listener(|this, _, _, cx| this.answer(Verdict::Approve, cx)),
-                        ),
-                    )
-                    .child(
-                        button(
-                            "feedback-send",
-                            "Send feedback",
-                            ButtonVariant::Secondary,
-                            cx,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            let text = this.feedback.read(cx).value().to_string();
-                            if !text.trim().is_empty() {
-                                this.feedback
-                                    .update(cx, |f, cx| f.set_value("", window, cx));
-                                this.answer(Verdict::Feedback(text), cx);
-                            }
-                        })),
-                    )
-                    .child(
-                        button("reject", "Reject", ButtonVariant::Danger, cx).on_click(
-                            cx.listener(|this, _, _, cx| this.answer(Verdict::Reject, cx)),
-                        ),
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                action("approve", "Approve")
+                                    .bg(t.success)
+                                    .text_color(t.on_accent)
+                                    .hover(|h| h.opacity(0.88))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.answer(Verdict::Approve, cx)
+                                    })),
+                            )
+                            .child(
+                                action("feedback-send", "Send feedback")
+                                    .bg(t.foreground.opacity(0.10))
+                                    .hover(|h| h.bg(t.foreground.opacity(0.16)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let text = this.feedback.read(cx).value().to_string();
+                                        if !text.trim().is_empty() {
+                                            this.feedback
+                                                .update(cx, |f, cx| f.set_value("", window, cx));
+                                            this.answer(Verdict::Feedback(text), cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                action("reject", "Reject")
+                                    .text_color(t.danger)
+                                    .hover(|h| h.bg(t.danger.opacity(0.12)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.answer(Verdict::Reject, cx)
+                                    })),
+                            ),
                     ),
-            )
+            );
+        let right = self
+            .pill("Tests pass", Status::Success, cx)
+            .into_any_element();
+        self.page(
+            "Diff review",
+            "Verified in the sandbox. Nothing is written until you approve.",
+            Some(right),
+            body,
+            cx,
+        )
     }
 
     fn output(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.omarchy().clone();
-        let mut p = panel("Output", cx);
-        match self.session.as_ref().and_then(|s| s.finished.as_ref()) {
-            None => p = p.child("No finished run yet."),
-            Some(results) => {
-                for (lang, outcome) in results {
-                    let name = if lang.is_empty() { "result" } else { lang };
-                    p = p.child(
+        let Some(results) = self.session.as_ref().and_then(|s| s.finished.as_ref()) else {
+            let body = self.empty(
+                "No finished run",
+                "Results for each language show up here when a run completes.",
+                cx,
+            );
+            return self.page("Output", "What came out of the last run.", None, body, cx);
+        };
+        let mut col = div().flex().flex_col().gap_4();
+        for (lang, outcome) in results {
+            let name = if lang.is_empty() { "Result" } else { lang };
+            let (label, status) = if outcome.ok {
+                ("Verified", Status::Success)
+            } else {
+                ("Needs attention", Status::Error)
+            };
+            col = col.child(
+                self.card(cx)
+                    .gap_3()
+                    .child(
                         div()
                             .flex()
-                            .flex_col()
-                            .gap_1()
+                            .items_center()
+                            .justify_between()
                             .child(
                                 div()
+                                    .text_size(rems(1.))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(if outcome.ok { t.success } else { t.danger })
-                                    .child(format!(
-                                        "{name}: {}",
-                                        if outcome.ok { "ok" } else { "failed" }
-                                    )),
+                                    .child(name.to_string()),
                             )
+                            .child(self.pill(label, status, cx)),
+                    )
+                    .child(
+                        div()
+                            .p_3()
+                            .rounded_lg()
+                            .bg(t.inset)
+                            .font_family(t.mono_font.clone())
+                            .text_size(rems(0.75))
                             .child(outcome.text.clone()),
-                    );
-                }
-            }
+                    ),
+            );
         }
-        p
+        self.page("Output", "What came out of the last run.", None, col, cx)
     }
 }
 
@@ -341,7 +816,8 @@ impl Render for Forge {
                     .min_w_0()
                     .h_full()
                     .overflow_y_scroll()
-                    .p_3()
+                    .px_10()
+                    .py_8()
                     .child(body),
             )
     }

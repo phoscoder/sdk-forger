@@ -1,6 +1,7 @@
 //! GPUI desktop front end. The UI thread never calls the engine directly: a [`Session`] runs the
 //! pipeline on its own thread and the UI drains its channels on a timer.
 
+mod presets;
 mod session;
 
 use std::time::Duration;
@@ -8,10 +9,11 @@ use std::time::Duration;
 use gpui_kit::base::input::{InputState, TextareaState};
 use gpui_kit::rems;
 use gpui_kit::{
-    div, prelude::*, AnyElement, App, Context, Div, Entity, FontWeight, SharedString, Window,
-    WindowOptions,
+    div, prelude::*, AnyElement, App, Context, Div, Entity, FontWeight, SharedString, Stateful,
+    Window, WindowOptions,
 };
 use gpui_omarchy::*;
+use presets::Preset;
 use sdkforge_engine::{Level, Verdict};
 use session::{Inputs, Mode, Session};
 
@@ -22,15 +24,17 @@ enum Screen {
     Run,
     Review,
     Output,
+    Settings,
 }
 
 impl Screen {
-    const ALL: [Screen; 5] = [
+    const ALL: [Screen; 6] = [
         Screen::Project,
         Screen::Instructions,
         Screen::Run,
         Screen::Review,
         Screen::Output,
+        Screen::Settings,
     ];
 
     fn label(self) -> &'static str {
@@ -40,8 +44,16 @@ impl Screen {
             Screen::Run => "Run",
             Screen::Review => "Diff review",
             Screen::Output => "Output",
+            Screen::Settings => "Settings",
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum Btn {
+    Primary,
+    Subtle,
+    Danger,
 }
 
 struct Forge {
@@ -54,6 +66,26 @@ struct Forge {
     feedback: Entity<InputState>,
     instructions: Entity<TextareaState>,
     session: Option<Session>,
+    key: Entity<InputState>,
+    key_source: &'static str,
+    key_note: Option<(String, bool)>,
+    presets: Vec<Preset>,
+    preset_name: Entity<InputState>,
+    preset_text: Entity<TextareaState>,
+    /// Name of the preset whose text is loaded into the Instructions box.
+    active_preset: Option<String>,
+    preset_note: Option<(String, bool)>,
+}
+
+/// Where the Claude API key comes from right now.
+fn key_source() -> &'static str {
+    if std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
+        "the ANTHROPIC_API_KEY environment variable"
+    } else if sdkforge_engine::api_key().is_some() {
+        "the system keychain"
+    } else {
+        "nowhere yet"
+    }
 }
 
 impl Forge {
@@ -79,6 +111,24 @@ impl Forge {
                     .placeholder("Instructions for the model, e.g. naming, error handling, style")
             }),
             session: None,
+            key: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("sk-ant-…")
+            }),
+            key_source: key_source(),
+            key_note: None,
+            presets: presets::default_path()
+                .map(|p| presets::load(&p))
+                .unwrap_or_default(),
+            preset_name: field("Name, e.g. Strict typing", window, cx),
+            preset_text: cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .rows(6)
+                    .placeholder("What the model should follow")
+            }),
+            active_preset: None,
+            preset_note: None,
         };
         // Drain the engine's channels ten times a second.
         cx.spawn(async move |this, cx| loop {
@@ -126,6 +176,97 @@ impl Forge {
         }
         self.screen = Screen::Run;
         cx.notify();
+    }
+
+    fn save_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.key.read(cx).value().trim().to_string();
+        if key.is_empty() {
+            self.key_note = Some(("Paste a key first.".into(), false));
+        } else {
+            self.key_note = Some(match sdkforge_engine::store_api_key(&key) {
+                Ok(()) => {
+                    self.key.update(cx, |k, cx| k.set_value("", window, cx));
+                    ("Saved to the system keychain.".into(), true)
+                }
+                Err(e) => (e.to_string(), false),
+            });
+        }
+        self.key_source = key_source();
+        cx.notify();
+    }
+
+    fn forget_key(&mut self, cx: &mut Context<Self>) {
+        self.key_note = Some(match sdkforge_engine::forget_api_key() {
+            Ok(()) => ("Removed from the system keychain.".into(), true),
+            Err(e) => (e.to_string(), false),
+        });
+        self.key_source = key_source();
+        cx.notify();
+    }
+
+    fn persist_presets(&mut self) {
+        let result = match presets::default_path() {
+            Some(path) => presets::save(&path, &self.presets).map_err(|e| e.to_string()),
+            None => Err("no config folder found".to_string()),
+        };
+        if let Err(e) = result {
+            self.preset_note = Some((format!("Could not save presets: {e}"), false));
+        }
+    }
+
+    fn save_preset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.preset_name.read(cx).value().trim().to_string();
+        let instruction = self.preset_text.read(cx).value().trim().to_string();
+        if name.is_empty() || instruction.is_empty() {
+            self.preset_note = Some(("Give it a name and some instructions.".into(), false));
+        } else {
+            presets::upsert(
+                &mut self.presets,
+                Preset {
+                    name: name.clone(),
+                    instruction,
+                },
+            );
+            self.preset_note = Some((format!("Saved “{name}”."), true));
+            self.persist_presets();
+            self.preset_name
+                .update(cx, |f, cx| f.set_value("", window, cx));
+            self.preset_text
+                .update(cx, |f, cx| f.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    fn edit_preset(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = self.presets.get(index).cloned() {
+            self.preset_name
+                .update(cx, |f, cx| f.set_value(p.name, window, cx));
+            self.preset_text
+                .update(cx, |f, cx| f.set_value(p.instruction, window, cx));
+            self.preset_note = None;
+            cx.notify();
+        }
+    }
+
+    fn delete_preset(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.presets.len() {
+            let gone = self.presets.remove(index);
+            if self.active_preset.as_deref() == Some(gone.name.as_str()) {
+                self.active_preset = None;
+            }
+            self.preset_note = Some((format!("Deleted “{}”.", gone.name), true));
+            self.persist_presets();
+            cx.notify();
+        }
+    }
+
+    fn use_preset(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = self.presets.get(index).cloned() {
+            self.instructions
+                .update(cx, |f, cx| f.set_value(p.instruction, window, cx));
+            self.active_preset = Some(p.name);
+            cx.notify();
+        }
     }
 
     fn running(&self) -> bool {
@@ -540,20 +681,241 @@ impl Forge {
         )
     }
 
+    fn button(
+        &self,
+        id: impl Into<SharedString>,
+        label: &str,
+        kind: Btn,
+        cx: &App,
+    ) -> Stateful<Div> {
+        let t = cx.omarchy();
+        let base = div()
+            .id(id.into())
+            .px_4()
+            .py_2()
+            .rounded_lg()
+            .cursor_pointer()
+            .text_size(rems(0.8125))
+            .font_weight(FontWeight::BOLD)
+            .child(label.to_string());
+        match kind {
+            Btn::Primary => base
+                .bg(t.accent)
+                .text_color(t.on_accent)
+                .hover(|h| h.opacity(0.88)),
+            Btn::Subtle => base
+                .bg(t.foreground.opacity(0.10))
+                .hover(|h| h.bg(t.foreground.opacity(0.16))),
+            Btn::Danger => base
+                .text_color(t.danger)
+                .hover(|h| h.bg(t.danger.opacity(0.12))),
+        }
+    }
+
+    /// One line of feedback under a form: green when it worked, red when it did not.
+    fn note(&self, note: &Option<(String, bool)>, cx: &App) -> Option<Div> {
+        let t = cx.omarchy();
+        note.as_ref().map(|(text, ok)| {
+            div()
+                .text_size(rems(0.75))
+                .text_color(if *ok { t.success } else { t.danger })
+                .child(text.clone())
+        })
+    }
+
     fn instructions(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = self
-            .card(cx)
-            .child(self.field(
+        let t = cx.omarchy().clone();
+        let mut chips = div().flex().flex_wrap().gap_2();
+        for (i, p) in self.presets.iter().enumerate() {
+            let on = self.active_preset.as_deref() == Some(p.name.as_str());
+            chips = chips.child(
+                div()
+                    .id(SharedString::from(format!("use-preset-{i}")))
+                    .px_3()
+                    .py_1p5()
+                    .rounded_full()
+                    .border_1()
+                    .cursor_pointer()
+                    .text_size(rems(0.75))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .when(on, |d| {
+                        d.border_color(t.accent)
+                            .bg(t.accent.opacity(0.14))
+                            .text_color(t.accent)
+                    })
+                    .when(!on, |d| {
+                        d.border_color(t.border)
+                            .hover(|h| h.border_color(t.foreground.opacity(0.35)))
+                    })
+                    .child(p.name.clone())
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.use_preset(i, window, cx)),
+                    ),
+            );
+        }
+        let saved = if self.presets.is_empty() {
+            div()
+                .text_size(rems(0.75))
+                .text_color(t.secondary)
+                .child("No saved instructions yet. Add some in Settings and they appear here.")
+        } else {
+            div().flex().flex_col().gap_2().child(chips)
+        };
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(self.card(cx).child(self.field(
+                "Saved instructions",
+                "Pick one to load it into the box below. You can still edit it for this run.",
+                saved,
+                cx,
+            )))
+            .child(self.card(cx).child(self.field(
                 "Instructions for the model",
                 "Naming, error handling, async style, anything the SDK should follow. Secrets are redacted before sending.",
                 textarea("instructions", &self.instructions, window, cx),
                 cx,
-            ));
+            )));
         self.page(
             "Instructions",
             "Optional guidance sent with every request in Generate and Port.",
             None,
             body,
+            cx,
+        )
+    }
+
+    fn settings(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.omarchy().clone();
+        let has_key = self.key_source != "nowhere yet";
+        let key_card = self
+            .card(cx)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(rems(1.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Claude API key"),
+                    )
+                    .child(self.pill(
+                        if has_key { "Key found" } else { "No key" },
+                        if has_key { Status::Success } else { Status::Warning },
+                        cx,
+                    )),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.8125))
+                    .text_color(t.secondary)
+                    .child(format!("Currently read from {}.", self.key_source)),
+            )
+            .child(self.field(
+                "New key",
+                "Stored in your system keychain, never in a file. The environment variable wins if both are set.",
+                input("key", &self.key, window, cx),
+                cx,
+            ))
+            .children(self.note(&self.key_note, cx))
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(
+                        self.button("save-key", "Save key", Btn::Primary, cx)
+                            .on_click(cx.listener(|this, _, window, cx| this.save_key(window, cx))),
+                    )
+                    .child(
+                        self.button("forget-key", "Remove saved key", Btn::Danger, cx)
+                            .on_click(cx.listener(|this, _, _, cx| this.forget_key(cx))),
+                    ),
+            );
+
+        let mut list = div().flex().flex_col().gap_2();
+        for (i, p) in self.presets.iter().enumerate() {
+            let preview: String = p.instruction.chars().take(90).collect();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .p_3()
+                    .rounded_lg()
+                    .bg(t.inset)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(rems(0.8125))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(p.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(0.6875))
+                                    .text_color(t.secondary)
+                                    .child(preview),
+                            ),
+                    )
+                    .child(
+                        self.button(format!("edit-preset-{i}"), "Edit", Btn::Subtle, cx)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_preset(i, window, cx)
+                            })),
+                    )
+                    .child(
+                        self.button(format!("delete-preset-{i}"), "Delete", Btn::Danger, cx)
+                            .on_click(cx.listener(move |this, _, _, cx| this.delete_preset(i, cx))),
+                    ),
+            );
+        }
+        let preset_card = self
+            .card(cx)
+            .child(
+                div()
+                    .text_size(rems(1.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("Saved instructions"),
+            )
+            .when(!self.presets.is_empty(), |d| d.child(list))
+            .child(self.field(
+                "Name",
+                "Saving with an existing name replaces it.",
+                input("preset-name", &self.preset_name, window, cx),
+                cx,
+            ))
+            .child(self.field(
+                "Instructions",
+                "Shown as a choice on the Instructions screen.",
+                textarea("preset-text", &self.preset_text, window, cx),
+                cx,
+            ))
+            .children(self.note(&self.preset_note, cx))
+            .child(
+                div().flex().child(
+                    self.button("save-preset", "Save instructions", Btn::Primary, cx)
+                        .on_click(cx.listener(|this, _, window, cx| this.save_preset(window, cx))),
+                ),
+            );
+
+        self.page(
+            "Settings",
+            "Your Claude key and the instructions you reuse.",
+            None,
+            div()
+                .flex()
+                .flex_col()
+                .gap_5()
+                .child(key_card)
+                .child(preset_card),
             cx,
         )
     }
@@ -801,6 +1163,7 @@ impl Render for Forge {
             Screen::Run => self.run(cx).into_any_element(),
             Screen::Review => self.review(cx, window).into_any_element(),
             Screen::Output => self.output(cx).into_any_element(),
+            Screen::Settings => self.settings(window, cx).into_any_element(),
         };
         focus_scope("forge")
             .size_full()

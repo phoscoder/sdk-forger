@@ -5874,6 +5874,8 @@ dependencies = [
  "sdkforge-planner",
  "sdkforge-repo",
  "sdkforge-verify",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
